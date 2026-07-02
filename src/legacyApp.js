@@ -59,6 +59,17 @@ const FORENSIC_URL = '/api/Forensic_DetailedTables';
 // POST + JSON body { CompanyID }. Response Data[0] carries the canonical
 // CompanyName, NSEcode/BSEcode and the exchange deep-links (NSELink/BSELink).
 const COMPANYNOTE_URL = '/api/companynote';
+// Forensic AI summary — server-side endpoint that turns the Earning Quality
+// table into a 2-3 line forensic summary. POST { company, mode, tab, tableText }
+// -> { summary, model }. The Anthropic key lives only on the server (the dev
+// shim in vite.config.js handles this path locally; in prod it is the
+// serverless function api/forensic-summary.js). NOT proxied to omkaradata.com.
+const FORENSIC_SUMMARY_URL = '/api/forensic-summary';
+// Forensic green/red flag cards — server-side endpoint that turns the
+// Fund Flow table into structured flags. POST { company, mode, tab,
+// tableText } -> { flags:[{ metric, type:'green'|'red', statement }] }.
+// Auto-loaded above the Snapshot table, cached per company + mode.
+const FORENSIC_FLAGS_URL = '/api/forensic-flags';
 // Watchlist persistence — server-backed CRUD for named watchlists.
 // POST + JSON body { ID, UserID, WatchListNAme, status, input }. When
 // ID is empty the server creates a new watchlist and returns it in the
@@ -4129,6 +4140,31 @@ function renderSearchDropdown() {
   }
 }
 
+// ---- Remember the last company opened in Forensic ----
+// Persisted to localStorage so reopening the Forensic module restores that
+// company's data instead of the empty landing. We store the whole search
+// result row (small) so the header paints instantly and resolveCompanyId()
+// works identically to a live pick. Always restored in Consolidated mode.
+const FORENSIC_LAST_CO_KEY = 'omkara.forensic.lastCompany';
+function writeLastForensicCompany(company) {
+  try {
+    if (company && resolveCompanyId(company)) {
+      localStorage.setItem(FORENSIC_LAST_CO_KEY, JSON.stringify(company));
+    }
+  } catch (_) { /* quota / private mode — selection just won't persist */ }
+}
+function readLastForensicCompany() {
+  try {
+    const raw = localStorage.getItem(FORENSIC_LAST_CO_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === 'object') ? obj : null;
+  } catch (_) { return null; }
+}
+function clearLastForensicCompany() {
+  try { localStorage.removeItem(FORENSIC_LAST_CO_KEY); } catch (_) {}
+}
+
 function selectCompany(company) {
   if (!company) return;
   state.gsearch.open = false;
@@ -4178,6 +4214,8 @@ function selectCompany(company) {
     loadForensicHeaderNote(company);
     // Forensic page "Single Page" tab — load Consolidated tables by default.
     startForensicSinglePage();
+    // Remember this pick so reopening the Forensic module restores it.
+    writeLastForensicCompany(company);
   }
   // Eager Forensic_DetailedTables fetch — NORMAL company page only. The
   // Forensic page is header-only and must not fire this call.
@@ -4310,7 +4348,7 @@ async function loadForensicSinglePage(mode) {
   fp.mode = mode;
   if (!cid) { fp.loading = false; fp.error = 'Company id not available for this selection.'; renderForensicPage(); return; }
   // Cache hit — instant Consolidated⇄Standalone switch.
-  if (fp.data[mode]) { fp.loading = false; fp.error = null; renderForensicPage(); return; }
+  if (fp.data[mode]) { fp.loading = false; fp.error = null; renderForensicPage(); requestForensicFlags(); return; }
 
   if (fp.abortController) fp.abortController.abort();
   fp.abortController = new AbortController();
@@ -4337,10 +4375,34 @@ async function loadForensicSinglePage(mode) {
     fp.buttonStatus = (json.button_status && typeof json.button_status === 'object')
       ? { con: !!json.button_status.con, std: !!json.button_status.std }
       : { con: true, std: true };
+
+    // Consolidated not available for this company → default to Standalone and
+    // keep the Consolidated pill greyed out, instead of showing an empty view.
+    // Detected either via button_status.con === false or an empty consolidated
+    // payload; only falls back when Standalone is actually available.
+    if (mode === 'con' && fp.buttonStatus.std
+        && (!fp.buttonStatus.con || fp.data['con'].length === 0)) {
+      fp.data['con'] = null;                 // discard the empty consolidated payload
+      await loadForensicSinglePage('std');   // fetch + render Standalone
+      if (state.company.fp === fp && fp.buttonStatus) fp.buttonStatus.con = false; // authoritative: no consolidated
+      renderForensicPage();
+      return;
+    }
+
     fp.loading = false;
     renderForensicPage();
+    requestForensicFlags();   // auto-generate the green/red cards (cached per mode)
   } catch (e) {
     if (signal.aborted || (e && e.name === 'AbortError')) return;
+    // Consolidated request failed outright → try Standalone once before erroring.
+    if (mode === 'con') {
+      fp.data['con'] = null;
+      await loadForensicSinglePage('std');
+      if (state.company.fp === fp) {
+        if (fp.buttonStatus) fp.buttonStatus.con = false;      // no consolidated
+        if (fp.data['std']) { renderForensicPage(); return; }  // Standalone shown
+      }
+    }
     fp.loading = false;
     fp.error = (e && e.message) || 'Network error';
     renderForensicPage();
@@ -4389,31 +4451,56 @@ function renderForensicPageTables() {
     const content = (Array.isArray(tab.tableContent) && tab.tableContent.length > 0)
       ? renderForensicCardGrid(tab)
       : renderForensicTimeSeriesTable(tab);
-    // ShareHolding Pattern gets a Quarterly / Yearly toggle on the heading line
-    // (right-aligned). Other tables just have a plain title.
     const isSh = /shareholding\s*pattern/i.test(String(tab.tabName || ''));
+    // Sections that get a "Generate AI Summary" button (Earning Quality, Fund
+    // Flow, Working capital) — resolve the section key from the registry.
+    const aiKey = Object.keys(FP_SUMMARY_SECTIONS)
+      .find(k => FP_SUMMARY_SECTIONS[k].match.test(String(tab.tabName || '')));
     let head;
+    let belowHead = '';
     if (isSh) {
+      // ShareHolding Pattern: Quarterly / Yearly toggle + "Generate AI Summary"
+      // button on the heading line; the summary reflects the selected view.
       const y = !!(fp && fp.shYearly);
       head = '<div class="fp-sec-head"><h3 class="fp-sec-title">' + escapeHtml(name) + '</h3>'
+        + '<div class="fp-sec-head-actions">'
+        + forensicAIBtnHtml('sh')
         + '<div class="fp-shtoggle" role="tablist" aria-label="Period">'
         + '<button type="button" class="fp-shbtn' + (!y ? ' active' : '') + '" data-shview="q">Quarterly</button>'
         + '<button type="button" class="fp-shbtn' + (y ? ' active' : '') + '" data-shview="y">Yearly</button>'
-        + '</div></div>';
+        + '</div></div></div>';
+      belowHead = '<div class="fp-ai" data-fp-ai="sh">' + forensicAIPanelHtml('sh') + '</div>';
+    } else if (aiKey) {
+      // Earning Quality / Fund Flow / Working capital: "Generate AI Summary"
+      // button on the heading line, summary rendered directly below the header.
+      head = '<div class="fp-sec-head"><h3 class="fp-sec-title">' + escapeHtml(name) + '</h3>'
+        + forensicAIBtnHtml(aiKey) + '</div>';
+      belowHead = '<div class="fp-ai" data-fp-ai="' + aiKey + '">' + forensicAIPanelHtml(aiKey) + '</div>';
     } else {
       head = '<h3 class="fp-sec-title">' + escapeHtml(name) + '</h3>';
     }
-    return '<section class="fp-section" id="fp-sec-' + i + '">' + head + content + '</section>';
+    return '<section class="fp-section" id="fp-sec-' + i + '">' + head + belowHead + content + '</section>';
   };
 
   const chips = '<nav class="fp-chips" aria-label="Jump to table">'
-    + data.map((tab, i) => '<button type="button" class="fp-chip" data-fpjump="fp-sec-' + i + '">'
-        + escapeHtml(displayForensicTabName(tab.tabName)) + '</button>').join('')
+    + data.map((tab, i) => {
+        // The Snapshot section is hidden; its pill becomes "Green & Red Flags"
+        // and jumps to the flag cards at the top instead of a table section.
+        const isSnap = /snapshot/i.test(String(tab.tabName || ''));
+        const label = isSnap ? escapeHtml('Green & Red Flags') : escapeHtml(displayForensicTabName(tab.tabName));
+        const target = isSnap ? 'fp-flags' : ('fp-sec-' + i);
+        return '<button type="button" class="fp-chip" data-fpjump="' + target + '">' + label + '</button>';
+      }).join('')
     + '</nav>';
 
-  const first = data.length ? sectionHtml(data[0], 0) : '';
-  const rest  = data.slice(1).map((tab, i) => sectionHtml(tab, i + 1)).join('');
-  return first + chips + rest;   // chips sit BELOW the Snapshot table
+  // Render every section EXCEPT Snapshot (kept out of the page on purpose;
+  // re-enable by removing the isSnap skip below). Section ids keep their data
+  // index so the jump pills stay aligned. Pills now sit directly below the
+  // flag cards since the Snapshot table no longer precedes them.
+  const sections = data
+    .map((tab, i) => (/snapshot/i.test(String(tab.tabName || '')) ? '' : sectionHtml(tab, i)))
+    .join('');
+  return forensicFlagsRowHtml() + chips + sections;
 }
 
 function wireForensicPage() {
@@ -4439,23 +4526,365 @@ function wireForensicPage() {
   host.querySelectorAll('.fp-shbtn[data-shview]').forEach(btn => {
     btn.addEventListener('click', () => {
       const yearly = btn.dataset.shview === 'y';
-      if (!!(state.company.fp && state.company.fp.shYearly) === yearly) return;
-      if (state.company.fp) state.company.fp.shYearly = yearly;
+      const fp = state.company.fp;
+      if (!!(fp && fp.shYearly) === yearly) return;
+      if (fp) {
+        fp.shYearly = yearly;
+        // The ShareHolding summary is view-specific — drop it (both modes) so it
+        // regenerates for the newly-selected view rather than showing a stale one.
+        if (fp.summaries) { if (fp.summaries.con) delete fp.summaries.con.sh; if (fp.summaries.std) delete fp.summaries.std.sh; }
+      }
       renderForensicPage();
     });
   });
   // Retry after an error.
   const retry = host.querySelector('[data-fpretry]');
   if (retry) retry.onclick = () => loadForensicSinglePage(state.company.fp.mode);
+  // Earning Quality / Fund Flow — Generate / Regenerate / Retry the AI summary.
+  host.querySelectorAll('[data-fp-ai-btn]').forEach(btn => {
+    const key = btn.getAttribute('data-fp-ai-btn');
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      requestForensicSummary(key, fpSummaryState(key).status === 'done');  // done → force regenerate
+    });
+  });
   // The 6 placeholder tabs are disabled; no handlers needed.
 }
 
 // Reset Single Page state for a freshly-selected company and load Consolidated.
 function startForensicSinglePage() {
-  state.company.fp = { mode: 'con', data: { con: null, std: null }, loading: false, error: null, buttonStatus: { con: true, std: true }, abortController: null, shYearly: false };
+  state.company.fp = { mode: 'con', data: { con: null, std: null }, loading: false, error: null, buttonStatus: { con: true, std: true }, abortController: null, shYearly: false, summaries: { con: {}, std: {} }, summaryAbort: {}, flags: { con: null, std: null }, flagsAbort: null };
   const host = document.getElementById('forensicPage');
   if (host) host.hidden = false;
   loadForensicSinglePage('con');
+}
+
+/* ---- Forensic AI summary (Earning Quality + Fund Flow) ----
+   One machinery drives a "Generate AI Summary" button on both the Earning
+   Quality and Fund Flow section headers. Results are cached per company +
+   statement mode (con/std) AND per section key in state.company.fp.summaries,
+   so re-opening or switching back is instant and never re-bills. The Anthropic
+   call happens server-side (FORENSIC_SUMMARY_URL) with the prompt chosen from
+   the section's tab; the browser only ships the table text + company name. */
+const FP_SUMMARY_SECTIONS = {
+  eq: { match: /earnings?\s*quality/i, tab: 'Earnings Quality',         empty: 'No Earning Quality data to summarise.' },
+  ff: { match: /fund\s*flow/i,         tab: 'Fund Flow',                empty: 'No Fund Flow data to summarise.' },
+  wc: { match: /working\s*capital/i,   tab: 'Working capital analysis', empty: 'No Working capital data to summarise.' },
+  ae: { match: /asset\s*efficiency/i,  tab: 'Asset efficiency',         empty: 'No Asset efficiency data to summarise.' },
+  cs: { match: /capital\s*structure/i, tab: 'Capital structure',         empty: 'No Capital structure data to summarise.' },
+  ea: { match: /expense\s*analysis/i,  tab: 'Expense Analysis',          empty: 'No Expense Analysis data to summarise.' },
+  dp: { match: /du\s*pont/i,           tab: 'Du Pont Analysis',          empty: 'No Du Pont Analysis data to summarise.' },
+  sh: { match: /shareholding\s*pattern/i, tab: 'ShareHolding Pattern (In %)', empty: 'No ShareHolding Pattern data to summarise.', yearlyToggle: true },
+};
+
+function fpSummaryState(key) {
+  const fp = state.company.fp;
+  if (!fp || !fp.summaries || !fp.summaries[fp.mode]) return { status: 'idle' };
+  return fp.summaries[fp.mode][key] || { status: 'idle' };
+}
+function fpWriteSummary(key, mode, patch) {
+  const fp = state.company.fp;
+  if (!fp) return;
+  if (!fp.summaries) fp.summaries = { con: {}, std: {} };
+  if (!fp.summaries[mode]) fp.summaries[mode] = {};
+  fp.summaries[mode][key] = Object.assign({}, fp.summaries[mode][key] || {}, patch);
+}
+
+function aiSparkSvg() {
+  return '<svg class="fp-ai-spark" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">'
+    + '<path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2z"/>'
+    + '<path d="M19 14l.9 2.6L22.5 17.5l-2.6.9L19 21l-.9-2.6L15.5 17.5l2.6-.9L19 14z" opacity="0.6"/>'
+    + '</svg>';
+}
+
+function forensicAIBtnHtml(key) {
+  const st = fpSummaryState(key);
+  const loading = st.status === 'loading';
+  let label = 'Generate AI Summary';
+  if (loading)               label = 'Generating…';
+  else if (st.status === 'done')  label = 'Regenerate';
+  else if (st.status === 'error') label = 'Retry';
+  return '<button type="button" class="fp-ai-btn' + (loading ? ' is-loading' : '') + '"'
+    + (loading ? ' disabled' : '') + ' data-fp-ai-btn="' + key + '">'
+    + aiSparkSvg() + '<span class="fp-ai-btn-label">' + label + '</span></button>';
+}
+
+function forensicAIPanelHtml(key) {
+  const st = fpSummaryState(key);
+  if (st.status === 'loading') {
+    return '<div class="fp-ai-box fp-ai-loading"><span class="fp-ai-spin" aria-hidden="true"></span>'
+      + '<span>Analysing the table and writing the forensic summary…</span></div>';
+  }
+  if (st.status === 'error') {
+    return '<div class="fp-ai-box fp-ai-error"><p>' + escapeHtml(st.error || 'Could not generate the summary.') + '</p></div>';
+  }
+  if (st.status === 'done') {
+    return '<div class="fp-ai-box fp-ai-result">'
+      + '<div class="fp-ai-badge">' + aiSparkSvg() + '<span>AI forensic summary</span></div>'
+      + '<p class="fp-ai-text">' + escapeHtml(st.text || '') + '</p>'
+      + '<p class="fp-ai-dis">AI-generated from the table above — verify before use.</p>'
+      + '</div>';
+  }
+  return '';  // idle — nothing shown until the button is clicked
+}
+
+// Targeted DOM update for the AI panel + button (avoids re-rendering all the
+// forensic tables on each AI state transition — keeps the page snappy).
+function renderForensicAIPanel(key) {
+  const host = document.getElementById('forensicPage');
+  if (!host) return;
+  const panel = host.querySelector('[data-fp-ai="' + key + '"]');
+  if (panel) panel.innerHTML = forensicAIPanelHtml(key);
+  const btn = host.querySelector('[data-fp-ai-btn="' + key + '"]');
+  if (btn) {
+    const st = fpSummaryState(key);
+    const loading = st.status === 'loading';
+    btn.disabled = loading;
+    btn.classList.toggle('is-loading', loading);
+    const lbl = btn.querySelector('.fp-ai-btn-label');
+    if (lbl) lbl.textContent = loading ? 'Generating…'
+      : (st.status === 'done' ? 'Regenerate' : (st.status === 'error' ? 'Retry' : 'Generate AI Summary'));
+  }
+}
+
+async function requestForensicSummary(key, force) {
+  const fp = state.company.fp;
+  if (!fp) return;
+  const sec = FP_SUMMARY_SECTIONS[key];
+  if (!sec) return;
+  const st = fpSummaryState(key);
+  if (st.status === 'loading') return;          // already running
+  if (st.status === 'done' && !force) return;    // cached — show as-is
+
+  const data = fp.data[fp.mode] || [];
+  const tab = data.find(t => sec.match.test(String(t.tabName || '')));
+  const ttOpts = (sec.yearlyToggle && fp.shYearly) ? { yearlyOnly: true } : undefined;
+  const tableText = tab ? forensicTabToText(tab, ttOpts) : '';
+  if (!tableText) {
+    fpWriteSummary(key, fp.mode, { status: 'error', error: sec.empty });
+    renderForensicAIPanel(key);
+    return;
+  }
+
+  const cid = String(resolveCompanyId(state.company.data) || '');
+  const reqMode = fp.mode;
+  const nameEl = document.querySelector('#companyView .co-name');
+  const company = (nameEl && nameEl.textContent.trim())
+    || (state.company.data && (state.company.data.CompanyName || state.company.data.NSESymbol)) || '';
+
+  if (!fp.summaryAbort) fp.summaryAbort = {};
+  if (fp.summaryAbort[key]) fp.summaryAbort[key].abort();
+  fp.summaryAbort[key] = new AbortController();
+  const signal = fp.summaryAbort[key].signal;
+
+  fpWriteSummary(key, reqMode, { status: 'loading', error: null });
+  renderForensicAIPanel(key);
+
+  try {
+    const res = await fetch(FORENSIC_SUMMARY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ company, mode: reqMode, tab: sec.tab, tableText }),
+      signal,
+    });
+    if (signal.aborted) return;
+    // Company changed mid-flight — drop this response.
+    if (String(resolveCompanyId(state.company.data) || '') !== cid) return;
+    const json = await res.json().catch(() => ({}));
+    if (signal.aborted) return;
+    if (!res.ok) throw new Error((json && json.error) || ('HTTP ' + res.status));
+    const summary = String((json && json.summary) || '').trim();
+    if (!summary) throw new Error('The AI returned an empty summary.');
+    fpWriteSummary(key, reqMode, { status: 'done', text: summary, error: null });
+    if (fp.mode === reqMode) renderForensicAIPanel(key);
+  } catch (e) {
+    if (signal.aborted || (e && e.name === 'AbortError')) return;
+    fpWriteSummary(key, reqMode, { status: 'error', error: (e && e.message) || 'Network error' });
+    if (fp.mode === reqMode) renderForensicAIPanel(key);
+  }
+}
+
+/* ---- Green / Red flag cards (above Snapshot) ----
+   Computed deterministically in-code (see FORENSIC_FLAG_METRICS) when the
+   Forensic page opens and cached per company + mode in state.company.fp.flags.
+   Each metric is looked up in its source table and bucketed against its rule —
+   Fund Flow: Cash From Operations(pre tax), Pre tax CFO/EBITDA(%), Free Cash
+   Flow; Asset efficiency: Capex / EBIDTA(%); Expense analysis: Income tax paid /
+   Income Tax Expenses (band); Working capital: Net Working Capital as % of
+   sales, Debtors % of Sales, Inventory % Sales (3yr/5yr vs the 10yr benchmark).
+   A mixed metric appears in both cards. No AI / network call: always instant. */
+function fpFlagsState() {
+  const fp = state.company.fp;
+  if (!fp || !fp.flags) return { status: 'idle' };
+  return fp.flags[fp.mode] || { status: 'idle' };
+}
+function fpWriteFlags(mode, patch) {
+  const fp = state.company.fp;
+  if (!fp) return;
+  if (!fp.flags) fp.flags = { con: null, std: null };
+  fp.flags[mode] = Object.assign({}, fp.flags[mode] || {}, patch);
+}
+
+function flagIconSvg(type) {
+  return type === 'green'
+    ? '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>'
+    : '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
+}
+
+function forensicFlagCardHtml(type) {
+  const st = fpFlagsState();
+  const isGreen = type === 'green';
+  const title = isGreen ? 'Green Flags' : 'Red Flags';
+  let inner;
+  if (st.status === 'loading') {
+    inner = '<div class="fp-flag-loading"><span class="fp-flag-spin" aria-hidden="true"></span><span>Scanning the tables…</span></div>';
+  } else if (st.status === 'error') {
+    inner = '<p class="fp-flag-empty">Could not load flags.</p>';
+  } else if (st.status === 'done') {
+    const items = (isGreen ? st.green : st.red) || [];
+    inner = items.length
+      ? '<ul class="fp-flag-list">' + items.map(s => '<li>' + escapeHtml(s) + '</li>').join('') + '</ul>'
+      : '<p class="fp-flag-empty">No ' + (isGreen ? 'green' : 'red') + ' flags detected.</p>';
+  } else {
+    inner = '<p class="fp-flag-empty">&nbsp;</p>';
+  }
+  return '<div class="fp-flag-card ' + (isGreen ? 'green' : 'red') + '">'
+    + '<div class="fp-flag-head">' + flagIconSvg(type) + '<span>' + title + '</span></div>'
+    + inner + '</div>';
+}
+
+function forensicFlagsRowHtml() {
+  return '<div class="fp-flags" id="fp-flags" data-fp-flags>'
+    + forensicFlagCardHtml('green') + forensicFlagCardHtml('red') + '</div>';
+}
+
+// Targeted update of the two cards (avoids re-rendering the tables).
+function renderForensicFlagsCards() {
+  const host = document.getElementById('forensicPage');
+  if (!host) return;
+  const row = host.querySelector('[data-fp-flags]');
+  if (row) row.innerHTML = forensicFlagCardHtml('green') + forensicFlagCardHtml('red');
+}
+
+// Flag metric config (Fund Flow). Each metric is bucketed per period against
+// its threshold; >threshold periods → green flag, <threshold → red flag, a
+// mixed metric yields both. Add metrics by appending here (match = how to find
+// the row; threshold = the cut-off; gapZero = treat a 0 value as a data gap).
+const FORENSIC_FLAG_METRICS = [
+  { table: /fund\s*flow/i, name: 'Cash From Operations(pre tax)', match: /cash\s*from\s*operations/i, threshold: 0, gapZero: false,
+    green: 'consistent operating cash generation.', red: 'weak cash flows despite profits.' },
+  { table: /fund\s*flow/i, name: 'Pre tax CFO / EBITDA(%)', match: /pre\s*tax\s*cfo/i, threshold: 80, gapZero: true,
+    green: 'strong profit-to-cash conversion.', red: 'poor cash conversion, a long-term red flag.' },
+  { table: /fund\s*flow/i, name: 'Free Cash Flow', match: /free\s*cash\s*flow/i, threshold: 0, gapZero: false,
+    green: 'surplus cash post capex, interest, and tax.', red: 'cash burn and funding dependence.' },
+  { table: /asset\s*efficiency/i, name: 'Capex / EBIDTA(%)', match: /capex\s*\/\s*ebidta/i, threshold: 0, gapZero: false, word: 'cumulative',
+    green: 'the company is investing in capex to support future growth.', red: 'inadequate or stressed investment in the business.' },
+  { table: /expense\s*analysis/i, name: 'Income tax paid / Income Tax Expenses', match: /income\s*tax\s*paid\s*\/\s*income\s*tax\s*expense/i, band: [-15, 15], gapZero: false, word: 'cumulative',
+    green: 'cash tax paid is broadly in line with P&L tax expense over the long term.', red: 'timing differences, deferrals, or aggressive tax assumptions, requiring closer scrutiny.' },
+  { table: /working\s*capital/i, name: 'Net Working Capital as % of sales', match: /net\s*working\s*capital\s*as\s*%\s*of\s*sales/i, vsLongTerm: true, word: 'average',
+    green: 'indicate structurally improving operational efficiency.', red: 'indicate no meaningful improvement.' },
+  { table: /working\s*capital/i, name: 'Debtors % of Sales', match: /debtors?\s*%\s*of\s*sales/i, vsLongTerm: true, word: 'average',
+    green: 'indicate structurally improving operational efficiency.', red: 'indicate no meaningful improvement.' },
+  { table: /working\s*capital/i, name: 'Inventory % Sales', match: /inventory\s*%\s*sales/i, vsLongTerm: true, word: 'average',
+    green: 'indicate structurally improving operational efficiency.', red: 'indicate no meaningful improvement.' },
+];
+
+// Normalise a summary cell to a display figure: "(-14.20)" -> "-14.20",
+// "(-138.66%)" -> "-138.66%", "6.94" -> "6.94", "412.04%" -> "412.04%".
+function fmtFlagFigure(raw) {
+  let s = String(raw == null ? '' : raw).trim();
+  const neg = /^\(.*\)$/.test(s) || /^[-−–—]/.test(s);
+  s = s.replace(/[()]/g, '').replace(/^[-−–—]\s*/, '');
+  return (neg ? '-' : '') + s;
+}
+
+// Parse a forensic tab once into { schema, periodRows (3yr/5yr/10yr), order, word }.
+function prepForensicTab(tab) {
+  const ct = (tab && tab.childTable) || [];
+  if (ct.length < 2) return null;
+  const periodRows = {};
+  ct.slice(1).forEach(r => {
+    const m = String(r.description || '').trim().match(/^(\d+)\s*yrs?$/i);
+    if (m) periodRows[m[1] + 'yr'] = r;
+  });
+  return {
+    schema: ct[0],
+    periodRows,
+    order: ['3yr', '5yr', '10yr'].filter(p => periodRows[p]),
+    word: String(cagrGroupLabel(tab.tabName) || 'cumulative').toLowerCase(),
+  };
+}
+
+// Deterministically build green/red flag statements from the loaded forensic
+// tabs, per FORENSIC_FLAG_METRICS. Each metric is looked up in its source
+// table and bucketed per period against its threshold, band, or 10yr
+// benchmark (vsLongTerm). No AI.
+function buildForensicFlags(data) {
+  const allKeys = ['Row1','Row2','Row3','Row4','Row5','Row6','Row7','Row8','Row9','Row10','Row11'];
+  const tabInfo = new Map();   // tab object -> prepForensicTab(tab)
+  const green = [], red = [];
+
+  FORENSIC_FLAG_METRICS.forEach(cfg => {
+    const tab = (data || []).find(t => t && cfg.table.test(String(t.tabName || '')));
+    if (!tab) return;
+    if (!tabInfo.has(tab)) tabInfo.set(tab, prepForensicTab(tab));
+    const info = tabInfo.get(tab);
+    if (!info) return;
+    const key = allKeys.find(k => cfg.match.test(parseForensicMetric(info.schema[k]).name || ''));
+    if (!key) return;
+
+    const word = cfg.word || info.word;            // per-metric override wins
+    const figOf = (p) => {
+      const r = info.periodRows[p] ? parseForensicCell(info.periodRows[p][key]).value : '';
+      return { n: forensicNumericValue(r), fig: fmtFlagFigure(r) + ' (' + p + ')' };
+    };
+    const greenP = [], redP = [];
+
+    if (cfg.vsLongTerm) {
+      // Compare 3yr/5yr to the 10yr benchmark: below → green, at/above → red.
+      // The 10yr is the reference — cited in every card the metric produces,
+      // never bucketed on its own. No 10yr value → no benchmark → no flag.
+      if (!info.periodRows['10yr']) return;
+      const base = figOf('10yr');
+      if (base.n == null) return;
+      ['3yr', '5yr'].forEach(p => {
+        if (!info.periodRows[p]) return;
+        const c = figOf(p);
+        if (c.n == null) return;
+        (c.n < base.n ? greenP : redP).push(c.fig);   // at/above benchmark → red
+      });
+      if (greenP.length) green.push(cfg.name + ': ' + greenP.concat(base.fig).join(', ') + ' ' + word + ' — ' + cfg.green);
+      if (redP.length)   red.push(cfg.name + ': ' + redP.concat(base.fig).join(', ') + ' ' + word + ' — ' + cfg.red);
+      return;
+    }
+
+    info.order.forEach(p => {
+      const c = figOf(p);
+      if (c.n == null) return;                     // blank / "-" → data gap
+      if (cfg.gapZero && c.n === 0) return;        // 0% → data gap (ratio metric)
+      let bucket;
+      if (cfg.band) {                              // green inside [lo, hi], red outside
+        bucket = (c.n >= cfg.band[0] && c.n <= cfg.band[1]) ? 'green' : 'red';
+      } else {                                     // green > threshold, red < threshold
+        bucket = c.n > cfg.threshold ? 'green' : (c.n < cfg.threshold ? 'red' : null);
+      }
+      if (bucket === 'green') greenP.push(c.fig);
+      else if (bucket === 'red') redP.push(c.fig);
+    });
+    if (greenP.length) green.push(cfg.name + ': ' + greenP.join(', ') + ' ' + word + ' — ' + cfg.green);
+    if (redP.length)   red.push(cfg.name + ': ' + redP.join(', ') + ' ' + word + ' — ' + cfg.red);
+  });
+  return { green, red };
+}
+
+// Compute the flag cards for the current mode (instant, deterministic, cached).
+function requestForensicFlags() {
+  const fp = state.company.fp;
+  if (!fp) return;
+  if (fpFlagsState().status === 'done') return;   // already computed for this mode
+  const { green, red } = buildForensicFlags(fp.data[fp.mode] || []);
+  fpWriteFlags(fp.mode, { status: 'done', green, red, error: null });
+  renderForensicFlagsCards();
 }
 
 // Reset a chip's link affordances back to a plain (non-clickable) chip.
@@ -5035,6 +5464,25 @@ function showView(name) {
   if (target === 'settings') renderSettingsPanel();
   if (target === 'company')  renderCompanyView();
   if (target === 'forensic') {
+    // Reopen the Forensic module on the LAST selected company (persisted to
+    // localStorage) instead of the empty landing. First-time users — or a
+    // stale/unresolvable saved entry — still get the "Select a company" state.
+    const saved = readLastForensicCompany();
+    if (saved && resolveCompanyId(saved)) {
+      const savedId = String(resolveCompanyId(saved));
+      const curId = state.company.data ? String(resolveCompanyId(state.company.data) || '') : '';
+      const alreadyLoaded = state.company.headerOnly && curId && curId === savedId
+        && state.company.fp && (state.company.fp.data.con || state.company.fp.loading);
+      if (alreadyLoaded) {
+        // Same company already in memory — just reveal it, no refetch.
+        showView('company');
+      } else {
+        // Fresh load (Consolidated); selectCompany switches to the company view.
+        selectCompany(saved);
+      }
+      return;
+    }
+    if (saved) clearLastForensicCompany();  // unresolvable — drop it
     // Drop focus into the top search so the user can type a company
     // immediately, matching "select a company from the search bar above".
     const gs = document.getElementById('globalSearchInput');
@@ -5845,8 +6293,65 @@ function formatForensicDate(stamp) {
   return (FR_MONTH_NAMES[mo] || ('M' + mo)) + " '" + String(y).slice(-2);
 }
 
+// Parse the signed numeric value from a forensic display cell, e.g.
+// "8.17%" -> 8.17, "(-38.69%)" -> -38.69, "-0.59%" -> -0.59, "0%"/"-"/"" -> 0/null.
+// Used to colour Earning Quality CAGR cells by sign per the i-button condition.
+function forensicNumericValue(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s || s === '-') return null;
+  const neg = /^\(.*\)$/.test(s) || /^[-−–—]/.test(s);
+  const num = parseFloat(s.replace(/[^0-9.]/g, ''));
+  if (!isFinite(num)) return null;
+  return neg ? -num : num;
+}
+
 function isForensicPeriodLabel(desc) {
   return /^\d+\s*yrs?$/i.test(String(desc || '').trim());
+}
+
+// Serialise a time-series forensic tab (e.g. Earnings Quality) into a compact
+// tab-separated grid for the AI summary prompt: one row per metric, columns =
+// periods (oldest -> latest) then the 3yrs/5yrs/10yrs summary columns. Mirrors
+// the on-screen transposed view and strips the API's "value,#hex" colour hints.
+function forensicTabToText(tab, opts) {
+  const ct = (tab && tab.childTable) || [];
+  if (ct.length < 2) return '';
+  const schema = ct[0];
+  const dataRows = ct.slice(1);
+  const allKeys = ['Row1','Row2','Row3','Row4','Row5','Row6','Row7','Row8','Row9','Row10','Row11'];
+  const activeKeys = allKeys.filter(k =>
+    parseForensicMetric(schema[k]).name || dataRows.some(r => String(r[k] || '').trim()));
+  if (!activeKeys.length) return '';
+
+  let periods = [];
+  const cagr = [];
+  dataRows.forEach(r => {
+    (isForensicPeriodLabel(String(r.description || '').trim()) ? cagr : periods).push(r);
+  });
+  // Yearly view (ShareHolding Pattern) keeps only the March (…03) year-ends,
+  // matching the on-screen Quarterly/Yearly toggle.
+  if (opts && opts.yearlyOnly) periods = periods.filter(r => /03$/.test(String(r.description || '').trim()));
+  const num = d => parseInt(String(d).replace(/[^\d]/g, ''), 10) || 0;
+  periods.sort((a, b) => num(a.description) - num(b.description));
+  cagr.sort((a, b) => num(a.description) - num(b.description));
+
+  const cols = periods.concat(cagr);
+  const colLabel = (r) => {
+    const d = String(r.description || '').trim();
+    const m = d.match(/^(\d+)\s*yrs?$/i);
+    return m ? m[1] + 'yrs' : d;
+  };
+  const header = ['Metric'].concat(cols.map(colLabel)).join('\t');
+  const lines = activeKeys.map(k => {
+    const name = parseForensicMetric(schema[k]).name || k;
+    const vals = cols.map(r => {
+      const v = parseForensicCell(r[k]).value;
+      const s = (v == null ? '' : String(v)).trim();
+      return s || '-';
+    });
+    return [name].concat(vals).join('\t');
+  });
+  return [header].concat(lines).join('\n');
 }
 
 /* ---- Fetcher ---- */
@@ -6787,28 +7292,30 @@ function renderForensicTimeSeriesTable(tab) {
 
     const dateCells = displayPeriods.map(row => {
       const cell = parseForensicCell(row[key]);
-      // Auto-detect negative numbers from the display value itself
-      // (independent of any API color hint). Catches "-12.5", "-3%",
-      // "(45.2)" accounting-style negatives, and en-dash variants.
-      const v = String(cell.value || '').trim();
-      const looksNegative = /^[-−]\s*\d/.test(v) || /^\(\s*\d[^)]*\)\s*$/.test(v);
-      const negNumCls = looksNegative ? ' fr-neg-num' : '';
+      // Colour comes ONLY from the API "value,#hex" condition hints (the
+      // 'i'-button fields): fr-pos = green bg+number, fr-neg = red bg+number.
+      // Negative numbers are NOT auto-reddened — they render in the default
+      // text colour; the bracket formatting is kept for readability.
       const tintCls = cell.tint === 'pos' ? ' fr-pos' : (cell.tint === 'neg' ? ' fr-neg' : '');
-      return `<td class="${(tintCls + negNumCls).trim()}">${escapeHtml(bracketNegative(cell.value))}</td>`;
+      return `<td class="${tintCls.trim()}">${escapeHtml(bracketNegative(cell.value))}</td>`;
     }).join('');
 
+    // Earning Quality metrics (Revenue, Gross Profit, EBITDA Excl OI, PAT, Adj
+    // PAT) are all "higher is better", so its CAGR cells are coloured by the
+    // value's sign per the i-button condition (>0 green, <0 red, 0%/blank
+    // neutral) — the feed doesn't reliably tint this table. Other tables keep
+    // their API hint, whose green/red may encode a different good-direction.
+    const isEqTable = /earnings?\s*quality/i.test(String(tab.tabName || ''));
     const cagrCells = cagrRows.map(row => {
       const cell = parseForensicCell(row[key]);
       const hasValue = String(cell.value || '').trim().length > 0;
-      const v = String(cell.value || '').trim();
-      const looksNegative = /^[-−]\s*\d/.test(v) || /^\(\s*\d[^)]*\)\s*$/.test(v);
-      const negNumCls = looksNegative ? ' fr-neg-num' : '';
-      // Empty CAGR cells get no tint — only populated CAGR cells
-      // carry the positive-soft fill that visually anchors the
-      // CAGR block.
-      const tintCls = cell.tint === 'neg' ? ' fr-neg'
-                    : (cell.tint === 'pos' ? ' fr-pos' : '');
-      const cls = hasValue ? `fr-cagr-col${tintCls}${negNumCls}` : '';
+      let tint = cell.tint;
+      if (isEqTable && hasValue) {
+        const n = forensicNumericValue(cell.value);
+        tint = n == null ? null : (n > 0 ? 'pos' : (n < 0 ? 'neg' : null));
+      }
+      const tintCls = tint === 'neg' ? ' fr-neg' : (tint === 'pos' ? ' fr-pos' : '');
+      const cls = hasValue ? `fr-cagr-col${tintCls}` : '';
       return `<td class="${cls.trim()}">${escapeHtml(bracketNegative(cell.value))}</td>`;
     }).join('');
 
@@ -6842,7 +7349,7 @@ function renderForensicTimeSeriesTable(tab) {
   // the trailing summary columns are NOT a blanket-green block — only the
   // API-flagged condition cells carry colour. (For Working capital this leaves
   // the 10yr baseline column neutral, since the API only flags 3yr/5yr.)
-  const condClass = /fund flow|expense analysis|asset efficiency|working capital/i.test(String(tab.tabName || ''))
+  const condClass = /fund flow|expense analysis|asset efficiency|working capital|earnings?\s*quality/i.test(String(tab.tabName || ''))
     ? ' fr-cagr-conditional' : '';
 
   return `

@@ -198,13 +198,19 @@ Single Page integrates `Forensic_DetailedTables` (`POST` with
   default; `std` loads only when clicked. Each mode is cached, so toggling is
   instant after the first fetch (one request per type), with an in-flight
   abort + stale-response guard on company switch.
+- **Auto-fallback to Standalone.** When a company has no consolidated data,
+  Single Page automatically loads and shows `std` instead, with the Standalone
+  pill active and the Consolidated pill greyed out (disabled). "No consolidated"
+  is detected whether the `con` request comes back successful-but-empty
+  (`button_status.con === false` or an empty `Data`) or fails outright — either
+  way it fetches `{ CompanyId, type: 'std' }` once and keeps Consolidated greyed.
 - All **10 tables stacked** one below the other, reusing the existing table
   renderers (Snapshot/Averages KPI grids; the 8 time-series tables with their
   green/red CAGR cells).
 - A **sticky jump-chips bar** directly below the Snapshot table — one chip per
   table; clicking smooth-scrolls to that table and the bar stays pinned under
   the topbar while scrolling.
-- `button_status` drives whether Standalone is available.
+- `button_status` drives whether each pill is available.
 
 Scope: Forensic page only. The normal company page's Forensic tab is unchanged
 (`#forensicPage` is hidden there).
@@ -279,3 +285,85 @@ con/std stay cached and switching is still instant.
   Since the API only flags the 3yr and 5yr averages (compared against the 10yr
   long-term baseline), the 10yrs column now renders neutral while 3yrs / 5yrs
   keep their green/red.
+
+## Forensic Single Page — Earning Quality AI summary
+
+A "Generate AI Summary" button sits on the right of the **Earning Quality**
+section header (Forensic > Single Page). Clicking it produces a 2-3 line
+forensic summary (revenue trend, margin cascade, core-vs-non-core earnings,
+red flags) rendered directly below the header, above the table.
+
+**How it reaches Claude (key stays server-side).** The browser never holds the
+Anthropic key. It POSTs the already-loaded table (no extra data fetch) to
+`/api/forensic-summary`:
+
+```
+POST /api/forensic-summary
+{ company, mode: "con"|"std", tab, tableText }  ->  { summary, model }
+```
+
+- **Production:** the serverless function `api/forensic-summary.js` (standard
+  Node/Vercel handler) reads `ANTHROPIC_API_KEY` and calls the Messages API.
+  On Vercel this function is matched before the `/api/:path*` data rewrite, so
+  the AI path resolves to the function while every other `/api/*` still proxies
+  to omkaradata.com. If you host elsewhere, implement the same request/response
+  contract at this path (the client and dev server are unchanged).
+- **Development:** `vite.config.js` registers a dev-only middleware that serves
+  the same path locally using the shared logic, so `npm run dev` works without
+  a separate backend.
+- Prompt + Anthropic call live in one place: `api/_forensicSummary.js`
+  (imported by both the function and the dev shim).
+
+**Setup.** Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` for local
+dev; set the same variable in your host's environment for production. Optional
+`FORENSIC_SUMMARY_MODEL` overrides the default fast model.
+
+**Caching.** A generated summary is cached per company + statement mode
+(con/std) in memory, so switching Consolidated <-> Standalone or re-opening is
+instant and never re-bills. "Regenerate" forces a fresh call. State lives in
+`state.company.fp.summaries` and resets when a new company is selected.
+
+**Note:** `.env` is gitignored — never commit the key.
+
+
+**Per-section AI summaries:** the Earning Quality, Fund Flow, Working capital, Asset efficiency, Capital structure, Expense Analysis, Du Pont Analysis, and ShareHolding Pattern sections each have their own "Generate AI Summary" button. All share the `/api/forensic-summary` endpoint; the server picks the matching prompt (`EARNING_QUALITY_PROMPT` / `FUND_FLOW_PROMPT` / `WORKING_CAPITAL_PROMPT` / `ASSET_EFFICIENCY_PROMPT` / `CAPITAL_STRUCTURE_PROMPT` / `EXPENSE_ANALYSIS_PROMPT` / `DU_PONT_PROMPT` / `SHAREHOLDING_PROMPT`) from the request `tab`. The ShareHolding button sits next to its Quarterly/Yearly toggle, and its summary reflects the selected view (Yearly sends only the March year-end columns); switching the toggle clears the summary so it regenerates for the new view. Each works for Consolidated and Standalone, is cached per company + mode + section, and is fully independent. Sections are registered in `FP_SUMMARY_SECTIONS` (client) and the section button is resolved from that registry — adding another is one registry entry plus its server prompt.
+
+## Forensic — remember the last selected company
+
+Opening the Forensic module restores the **last company you viewed there**
+instead of the empty "Select a company" landing.
+
+- The picked company (the search result row) is saved to `localStorage` under
+  `omkara.forensic.lastCompany` whenever you open a company in Forensic.
+- Entering Forensic (nav click, hash change, or a reload at `#forensic`)
+  restores it: if that company is still loaded in memory it's revealed
+  instantly with no refetch; otherwise it does one fresh Consolidated load.
+- First-time users (no history) and any stale/unresolvable saved entry fall
+  back to the "Select a company" landing.
+- Always restores in Consolidated mode. Persistence is per browser (no backend).
+
+## Forensic — Green / Red flag cards (above Snapshot)
+
+Two rounded cards (Green Flags, Red Flags) sit at the top of the Forensic Single
+Page, above the (hidden) Snapshot section. They are **computed deterministically
+in the client** from the Fund Flow table when the page opens — no AI, no network
+call, so they are always correct and instant. Cached per company + mode.
+
+Scope (config: `FORENSIC_FLAG_METRICS` in `src/legacyApp.js`) — each metric
+names its source table: Fund Flow → **Cash From Operations(pre tax)** & **Free
+Cash Flow** (>0 green / <0 red) and **Pre tax CFO / EBITDA(%)** (>80% green /
+<80% red); Asset efficiency → **Capex / EBIDTA(%)** (>0 green / <0 red); Expense analysis →
+**Income tax paid / Income Tax Expenses** (a *band* rule: within −15%…+15% green,
+outside red; a literal 0% counts as green); Working capital → **Net Working
+Capital as % of sales**, **Debtors % of Sales**, **Inventory % Sales** (the 3yr &
+5yr averages vs the 10yr benchmark: below 10yr green, at/above red; the 10yr is
+the reference, cited in every statement). A metric uses a `threshold`, a `band`,
+or `vsLongTerm` (config decides). Each period is bucketed against the metric's threshold: periods above
+form its green flag, below form its red flag, so a **mixed metric appears in
+both cards** (e.g. FCF +6.94 (5yr) green; -14.20 (3yr), -23.86 (10yr) red). A
+0%/blank period is treated as a data-gap and ignored. Add metrics by appending
+to `FORENSIC_FLAG_METRICS` (name match, threshold, green/red phrases).
+
+Note: the earlier AI endpoint (`/api/forensic-flags`, `api/_forensicFlags.js`,
+dev shim) is left in place but is now dormant — the flags no longer call it.
+

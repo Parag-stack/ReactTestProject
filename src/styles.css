@@ -113,14 +113,11 @@
   #forensicPage table.fr-table thead th.fr-cagr-col { text-transform: none !important; }
 
   /* Fund Flow / Expense Analysis / Asset efficiency: the summary columns are
-     NOT a green flood — only API-flagged cells carry colour. Negatives without
-     an API flag show red text (no fill); API-flagged condition cells keep their
+     NOT a green flood — only API-flagged cells carry colour. Unflagged cells
+     (including negatives) stay neutral; API-flagged condition cells keep their
      green/red (the .fr-pos/.fr-neg rules below win by coming later). */
   #forensicPage table.fr-cagr-conditional tbody td.fr-cagr-col {
     background: transparent !important; color: var(--ink-2) !important;
-  }
-  #forensicPage table.fr-cagr-conditional tbody td.fr-cagr-col.fr-neg-num {
-    color: var(--negative) !important;
   }
   #forensicPage table.fr-cagr-conditional tbody td.fr-cagr-col.fr-pos {
     background: var(--positive-soft) !important; color: var(--positive) !important;
@@ -140,7 +137,62 @@
      (right-aligned), white-pill style matching the Consolidated / Standalone
      control. */
   #forensicPage .fp-sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+  #forensicPage .fp-sec-head-actions { display: inline-flex; align-items: center; gap: 10px; flex: none; }
   #forensicPage .fp-sec-head .fp-sec-title { margin: 0; }
+
+  /* Earning Quality — "Generate AI Summary" button (heading line, right) and
+     the generated summary panel rendered directly below the header. */
+  .fp-ai-btn { display: inline-flex; align-items: center; gap: 6px; flex: none; appearance: none;
+    padding: 7px 14px; border-radius: var(--radius); cursor: pointer;
+    font-family: var(--font); font-size: 12px; font-weight: 600; line-height: 1;
+    color: #fff; border: 1px solid transparent;
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    box-shadow: 0 1px 2px rgba(16,24,40,0.16); transition: filter .14s, box-shadow .14s, opacity .14s; }
+  .fp-ai-btn:hover:not(:disabled) { filter: brightness(1.07); box-shadow: 0 2px 6px rgba(79,70,229,0.28); }
+  .fp-ai-btn:disabled { cursor: default; opacity: .8; }
+  .fp-ai-btn .fp-ai-spark { flex: none; }
+  .fp-ai-btn.is-loading .fp-ai-spark { animation: fp-spin 1s linear infinite; }
+
+  .fp-ai { margin: 0 0 14px; }
+  .fp-ai:empty { display: none; }
+  .fp-ai-box { border-radius: var(--radius); padding: 14px 16px; font-size: 13px; line-height: 1.5; }
+  .fp-ai-loading { display: flex; align-items: center; gap: 10px; color: var(--muted);
+    background: #F4F6F9; border: 1px solid #E3E7EB; }
+  .fp-ai-spin { width: 15px; height: 15px; flex: none; border-radius: 50%;
+    border: 2px solid #C9D2DD; border-top-color: #4f46e5; animation: fp-spin .8s linear infinite; }
+  .fp-ai-error { color: var(--negative); background: var(--negative-soft); border: 1px solid #F3C9C9; }
+  .fp-ai-error p { margin: 0; }
+  .fp-ai-result { background: linear-gradient(180deg, #F7F5FF 0%, #F4F8FF 100%);
+    border: 1px solid #E2DDF7; }
+  .fp-ai-badge { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 8px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #6d28d9; }
+  .fp-ai-text { margin: 0; color: var(--ink); font-size: 13.5px; line-height: 1.55; }
+  .fp-ai-dis { margin: 9px 0 0; font-size: 11px; color: var(--muted); }
+
+  @keyframes fp-spin { to { transform: rotate(360deg); } }
+
+  /* Green / Red flag cards — two rounded cards side by side, above Snapshot. */
+  /* scroll-margin-top keeps the cards fully clear of the sticky topbar (~60px)
+     when the "Green & Red Flags" pill scrolls here, so the whole card shows. */
+  .fp-flags { display: flex; gap: 14px; margin: 0 0 18px; align-items: stretch; scroll-margin-top: 76px; }
+  .fp-flag-card { flex: 1 1 0; min-width: 0; border-radius: 12px; padding: 14px 16px;
+    border: 1px solid transparent; }
+  .fp-flag-card.green { background: linear-gradient(180deg, #F0FBF4 0%, #F6FCF8 100%); border-color: #CDEBD8; }
+  .fp-flag-card.red   { background: linear-gradient(180deg, #FEF2F2 0%, #FEF6F5 100%); border-color: #F6D2CE; }
+  .fp-flag-head { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 9px;
+    font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+  .fp-flag-card.green .fp-flag-head { color: var(--positive, #0F8A5F); }
+  .fp-flag-card.red   .fp-flag-head { color: var(--negative, #C0392B); }
+  .fp-flag-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 7px; }
+  .fp-flag-list li { position: relative; padding-left: 14px; font-size: 13px; line-height: 1.5; color: var(--ink); }
+  .fp-flag-list li::before { content: ""; position: absolute; left: 0; top: 8px; width: 6px; height: 6px; border-radius: 50%; }
+  .fp-flag-card.green .fp-flag-list li::before { background: var(--positive, #0F8A5F); }
+  .fp-flag-card.red   .fp-flag-list li::before { background: var(--negative, #C0392B); }
+  .fp-flag-empty { margin: 0; font-size: 12.5px; color: var(--muted); }
+  .fp-flag-loading { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--muted); }
+  .fp-flag-spin { width: 14px; height: 14px; flex: none; border-radius: 50%;
+    border: 2px solid #CBD5DF; border-top-color: var(--muted); animation: fp-spin .8s linear infinite; }
+  @media (max-width: 720px) { .fp-flags { flex-direction: column; } }
   .fp-shtoggle { display: inline-flex; gap: 3px; padding: 3px; background: #EEF1F4; border: 1px solid #E3E7EB; border-radius: var(--radius); margin: 0; flex: none; }
   .fp-shbtn { appearance: none; border: none; background: none; padding: 5px 14px; font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--muted); border-radius: calc(var(--radius) - 3px); cursor: pointer; transition: background .14s, color .14s, box-shadow .14s; }
   .fp-shbtn:hover:not(.active) { color: var(--ink); }
@@ -2259,15 +2311,6 @@
     background: var(--negative-soft);
     color: var(--negative);
     font-weight: 700;
-  }
-  /* Auto-detected negative values (any cell whose display text starts
-     with "-" or is wrapped in accounting parens). Red text only — no
-     background tint — so we don't conflict with the API-tinted
-     fr-pos / fr-neg cells when they carry their own explicit colour
-     hint. Excluded from cells that already carry an API tint. */
-  #companyView .cv-forensic table.fr-table tbody td.fr-neg-num:not(.fr-pos):not(.fr-neg) {
-    color: var(--negative);
-    font-weight: 600;
   }
   #companyView .cv-forensic table.fr-table tbody tr:hover td:not(.fr-pos):not(.fr-neg):not(.fr-td-period) {
     background: var(--bg-tile);
