@@ -407,8 +407,13 @@ Cash Flow** (>0 green / <0 red) and **Pre tax CFO / EBITDA(%)** (>80% green /
 outside red; a literal 0% counts as green); Working capital → **Net Working
 Capital as % of sales**, **Debtors % of Sales**, **Inventory % Sales** (the 3yr &
 5yr averages vs the 10yr benchmark: below 10yr green, at/above red; the 10yr is
-the reference, cited in every statement). A metric uses a `threshold`, a `band`,
-or `vsLongTerm` (config decides). Each period is bucketed against the metric's threshold: periods above
+the reference, cited in every statement); ShareHolding Pattern → **Pledged
+Shares(%)**, which has no 3/5/10yr summary columns, so it uses a `latestZero`
+rule instead — the **latest populated period** is read (e.g. `202603`): 0% →
+green ("indicates no promoter leverage"), > 0% → red ("indicates funding risk and
+potential forced selling risk"), citing that period (e.g. `60.7% (202603)`); a
+blank latest period falls back to the most recent populated one. A metric uses a
+`threshold`, a `band`, `vsLongTerm`, or `latestZero` (config decides). Each period is bucketed against the metric's threshold: periods above
 form its green flag, below form its red flag, so a **mixed metric appears in
 both cards** (e.g. FCF +6.94 (5yr) green; -14.20 (3yr), -23.86 (10yr) red). A
 0%/blank period is treated as a data-gap and ignored. Add metrics by appending

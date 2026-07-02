@@ -5190,6 +5190,10 @@ const FORENSIC_FLAG_METRICS = [
     green: 'indicate structurally improving operational efficiency.', red: 'indicate no meaningful improvement.' },
   { table: /working\s*capital/i, name: 'Inventory % Sales', match: /inventory\s*%\s*sales/i, vsLongTerm: true, word: 'average',
     green: 'indicate structurally improving operational efficiency.', red: 'indicate no meaningful improvement.' },
+  // ShareHolding Pattern — no 3/5/10yr summary columns, so this reads the LATEST
+  // populated period (e.g. 202603): 0% → green (no promoter leverage), > 0% → red.
+  { table: /shareholding\s*pattern/i, name: 'Pledged Shares(%)', match: /pledged\s*shares/i, latestZero: true,
+    green: 'indicates no promoter leverage.', red: 'indicates funding risk and potential forced selling risk.' },
 ];
 
 // Normalise a summary cell to a display figure: "(-14.20)" -> "-14.20",
@@ -5235,6 +5239,29 @@ function buildForensicFlags(data) {
     if (!info) return;
     const key = allKeys.find(k => cfg.match.test(parseForensicMetric(info.schema[k]).name || ''));
     if (!key) return;
+
+    if (cfg.latestZero) {
+      // Metric with no 3/5/10yr summary (ShareHolding): evaluate the LATEST
+      // populated period column — 0% → green, > 0% → red — and cite that period.
+      const rows = (tab.childTable || []).slice(1)
+        .filter(r => /^\d{6}$/.test(String(r.description || '').trim()))
+        .sort((a, b) => (parseInt(String(a.description).replace(/[^\d]/g, ''), 10) || 0)
+                      - (parseInt(String(b.description).replace(/[^\d]/g, ''), 10) || 0));
+      let latest = null;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const cell = parseForensicCell(rows[i][key]);
+        const n = forensicNumericValue(cell.value);
+        if (n == null) continue;                     // blank / "-" → skip, look earlier
+        let f = fmtFlagFigure(cell.value);
+        if (!/%\s*$/.test(f)) f += '%';              // Pledged Shares cells are bare numbers
+        latest = { n, fig: f + ' (' + String(rows[i].description).trim() + ')' };
+        break;
+      }
+      if (!latest) return;
+      if (latest.n === 0)      green.push(cfg.name + ': ' + latest.fig + ' — ' + cfg.green);
+      else if (latest.n > 0)   red.push(cfg.name + ': ' + latest.fig + ' — ' + cfg.red);
+      return;
+    }
 
     const word = cfg.word || info.word;            // per-metric override wins
     const figOf = (p) => {
