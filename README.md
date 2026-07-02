@@ -185,21 +185,21 @@ in a new tab. When `WebSiteLink` is absent the icon and link are omitted
 entirely. Website link appears on the Forensic card only (companynote isn't
 called on the normal company page).
 
-### Feature — Forensic page "Single Page" tab (Forensic_DetailedTables)
+### Feature — Forensic page "Analysis" tab (Forensic_DetailedTables)
 
 Below the company header card on the Forensic page there's now a tab bar:
-`Single Page | Ratios | Capital Structure | Directors and Auditor | Capital
-History | Dividend History | ESOP`. Single Page is active; the other six are
-greyed-out/disabled placeholders.
+`Analysis | Ratios | Capital Structure | Directors and Auditor | Capital
+History | Dividend History | ESOP`. Analysis (formerly "Single Page") is active;
+the other six are greyed-out/disabled placeholders.
 
-Single Page integrates `Forensic_DetailedTables` (`POST` with
+The Analysis tab integrates `Forensic_DetailedTables` (`POST` with
 `{ CompanyId, type }`, CompanyId mapped from the search result's `CompanyID`):
-- A **Consolidated / Standalone** toggle. Opening Single Page loads `con` by
+- A **Consolidated / Standalone** toggle. Opening the tab loads `con` by
   default; `std` loads only when clicked. Each mode is cached, so toggling is
   instant after the first fetch (one request per type), with an in-flight
   abort + stale-response guard on company switch.
 - **Auto-fallback to Standalone.** When a company has no consolidated data,
-  Single Page automatically loads and shows `std` instead, with the Standalone
+  the tab automatically loads and shows `std` instead, with the Standalone
   pill active and the Consolidated pill greyed out (disabled). "No consolidated"
   is detected whether the `con` request comes back successful-but-empty
   (`button_status.con === false` or an empty `Data`) or fails outright — either
@@ -207,13 +207,63 @@ Single Page integrates `Forensic_DetailedTables` (`POST` with
 - All **10 tables stacked** one below the other, reusing the existing table
   renderers (Snapshot/Averages KPI grids; the 8 time-series tables with their
   green/red CAGR cells).
-- A **sticky jump-chips bar** directly below the Snapshot table — one chip per
-  table; clicking smooth-scrolls to that table and the bar stays pinned under
-  the topbar while scrolling.
-- `button_status` drives whether each pill is available.
+- A **sticky jump-pill bar at the very top of the page — above the green/red
+  flag cards.** Pills: `Summary · Average · Earning Quality · Fund Flow · Working
+  Capital Analysis · Asset efficiency · Capital Structure · Expenses Analysis ·
+  Du Pont Analysis · ShareHolding Pattern (In%)`. The **Summary** pill scrolls
+  down to the flag cards; every other pill smooth-scrolls to its table. The bar
+  stays pinned under the topbar while scrolling. Pill labels are the same source
+  as each section's header (`displayForensicTabName`), so a pill and its heading
+  always read identically.
+- `button_status` drives whether each mode pill is available.
 
 Scope: Forensic page only. The normal company page's Forensic tab is unchanged
 (`#forensicPage` is hidden there).
+
+### Feature — Peer comparison ("+ Compare")
+
+Five forensic tables — **Earning Quality, Fund Flow, Working capital analysis,
+Asset efficiency, and Expense Analysis** — each gain a **+ Compare** button on
+their header to compare the current company against up to **2 peer companies**
+(3 total). Capital structure, Du Pont, and ShareHolding are excluded (no
+3/5/10yr summary columns to compare).
+
+- Adding a peer switches that table into **compare mode**: the per-period
+  history columns are hidden and the table shows only the **cumulative 3yr / 5yr
+  / 10yr** block, repeated once per company and **grouped by company** (all rows
+  shown). Each company group header carries the table's summary-type tag —
+  **CAGR** (Earning Quality), **Cumulative** (Fund Flow), **Averages** (Working
+  capital), **Cumulative/Average** (Asset efficiency, Expense Analysis). Removing
+  every peer restores the full-history view.
+- Tint follows each table's own rendering: Earning Quality colours cells by sign
+  (its feed doesn't tint), the others keep their API-flagged green/red — i.e.
+  each company's own signal.
+- The picker is a company **search popover** on the table header, backed by the
+  same `SymbolMaster_WithCode` endpoint as the global search (debounced, the
+  current company and already-added peers filtered out). It is fully
+  **keyboard-navigable**: ↑/↓ move the highlight, Enter adds the highlighted
+  company (or the first result if none is highlighted), Esc closes it; mouse
+  hover keeps the highlight in sync.
+- **Peer selection is independent per table** (`fp.compare[key]`), but peer
+  **data is shared**: a peer's full `Forensic_DetailedTables` payload is fetched
+  once per company (**Consolidated with Standalone fallback**) into
+  `fp.peerCache`, then each table extracts its own cumulative rows. Adding the
+  same peer to several tables does **not** refetch. Each peer column shows a
+  loading shimmer until data arrives, or a quiet "—" if that company lacks the
+  table.
+- The **AI Summary button is hidden while comparing** and returns when peers are
+  cleared.
+- Performance: compare changes **re-render only the touched section** — never the
+  other tables, the flag cards, or the Consolidated/Standalone state. Searches
+  are debounced with in-flight aborts, and typing updates only the results menu
+  (the input keeps focus).
+
+Implementation lives in `legacyApp.js`: a registry flag (`compare: true` on the
+relevant `FP_SUMMARY_SECTIONS` entries) drives one keyed code path —
+`compareSectionInnerHtml`, `renderCompareTable`, `extractCumulative`, the `cmp*`
+picker helpers, `fetchPeerData` (shared cache), and `peerExtractFor`. `fp.compare`
+holds per-table picker + peer state; `fp.peerCache` holds the shared per-company
+payload cache.
 
 ### Polish — Single Page presentation redesign
 

@@ -138,6 +138,47 @@
      control. */
   #forensicPage .fp-sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
   #forensicPage .fp-sec-head-actions { display: inline-flex; align-items: center; gap: 10px; flex: none; }
+
+  /* ---- Fund Flow peer comparison ---- */
+  #forensicPage .fp-cmp-btn { display: inline-flex; align-items: center; gap: 6px; flex: none; appearance: none;
+    border: 1.5px solid var(--indigo, #4F46E5); background: #fff; color: var(--indigo, #4F46E5);
+    font-family: var(--font); font-size: 12.5px; font-weight: 600; padding: 7px 13px; border-radius: var(--radius);
+    cursor: pointer; transition: background .12s, box-shadow .12s, opacity .12s; }
+  #forensicPage .fp-cmp-btn:hover:not(:disabled) { background: #F5F4FF; }
+  #forensicPage .fp-cmp-btn:disabled { opacity: .5; cursor: default; border-color: var(--line); color: var(--muted); }
+  #forensicPage .fp-cmp-btn .ff-plus { width: 14px; height: 14px; flex: none; }
+  #forensicPage .ff-search { position: relative; }
+  #forensicPage .ff-search-in { width: 232px; padding: 8px 11px; border: 1px solid var(--line); border-radius: var(--radius);
+    font-family: var(--font); font-size: 13px; outline: none; background: #fff; color: var(--ink); }
+  #forensicPage .ff-search-in:focus { border-color: var(--indigo, #4F46E5); box-shadow: 0 0 0 3px rgba(79,70,229,.12); }
+  #forensicPage .ff-menu { position: absolute; top: calc(100% + 6px); right: 0; width: 288px; background: #fff;
+    border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 12px 30px rgba(16,32,48,.15);
+    z-index: 30; overflow: hidden; max-height: 264px; overflow-y: auto; text-align: left; }
+  #forensicPage .ff-menu-item { display: block; width: 100%; text-align: left; border: none; background: #fff; cursor: pointer;
+    padding: 9px 12px; font-family: var(--font); font-size: 13px; color: var(--ink); }
+  #forensicPage .ff-menu-item:hover { background: #F4F6F8; }
+  #forensicPage .ff-menu-item.is-hl { background: #EEF1FF; }
+  #forensicPage .ff-menu-note { padding: 11px 12px; color: var(--muted); font-size: 12.5px; }
+  #forensicPage .ff-cmp-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 14px;
+    padding: 10px 12px; background: var(--bg-tile, #FAFBFC); border: 1px solid var(--line); border-radius: var(--radius); }
+  #forensicPage .ff-cmp-lbl { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  #forensicPage .ff-cmp-hint { font-size: 11.5px; color: var(--muted); margin-left: auto; }
+  #forensicPage .ff-chip { display: inline-flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--line);
+    border-radius: 999px; padding: 5px 10px 5px 11px; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+  #forensicPage .ff-chip-tag { font-size: 9.5px; font-weight: 700; letter-spacing: .05em; color: var(--muted); }
+  #forensicPage .ff-chip-x { appearance: none; border: none; background: #E7EBEF; color: #556; cursor: pointer;
+    width: 17px; height: 17px; border-radius: 50%; font-size: 12px; line-height: 1; display: grid; place-items: center; padding: 0; }
+  #forensicPage .ff-chip-x:hover { background: #D6DCE2; }
+  #forensicPage .ff-co-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; display: inline-block; }
+  #forensicPage table.ff-compare-table thead th.ff-cmp-grp { text-align: center; }
+  #forensicPage table.ff-compare-table thead th.ff-cmp-grp .ff-co-dot { margin-right: 6px; vertical-align: middle; }
+  #forensicPage table.ff-compare-table thead th.ff-cmp-grp .ff-cmp-type { display: inline-block; margin-left: 7px; padding: 1px 7px;
+    border-radius: 999px; background: rgba(255,255,255,.18); font-size: 9.5px; font-weight: 700; letter-spacing: .04em; vertical-align: middle; }
+  #forensicPage table.ff-compare-table td.ff-co-start, #forensicPage table.ff-compare-table th.ff-co-start { border-left: 2px solid var(--line) !important; }
+  #forensicPage table.ff-compare-table td.ff-co-wait { text-align: center; color: var(--muted); }
+  #forensicPage .ff-skel { display: inline-block; width: 60%; height: 11px; border-radius: 4px;
+    background: linear-gradient(90deg, #EEF1F4 25%, #E3E7EB 50%, #EEF1F4 75%); background-size: 200% 100%; animation: ff-shimmer 1.2s infinite; }
+  @keyframes ff-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
   #forensicPage .fp-sec-head .fp-sec-title { margin: 0; }
 
   /* Earning Quality — "Generate AI Summary" button (heading line, right) and
@@ -171,10 +212,10 @@
 
   @keyframes fp-spin { to { transform: rotate(360deg); } }
 
-  /* Green / Red flag cards — two rounded cards side by side, above Snapshot. */
-  /* scroll-margin-top keeps the cards fully clear of the sticky topbar (~60px)
-     when the "Green & Red Flags" pill scrolls here, so the whole card shows. */
-  .fp-flags { display: flex; gap: 14px; margin: 0 0 18px; align-items: stretch; scroll-margin-top: 76px; }
+  /* Green / Red flag cards — two rounded cards side by side, below the pills. */
+  /* scroll-margin-top clears the sticky topbar (~60px) AND the sticky pill bar
+     that now sits above the cards, so the "Summary" pill reveals the whole card. */
+  .fp-flags { display: flex; gap: 14px; margin: 0 0 18px; align-items: stretch; scroll-margin-top: 124px; }
   .fp-flag-card { flex: 1 1 0; min-width: 0; border-radius: 12px; padding: 14px 16px;
     border: 1px solid transparent; }
   .fp-flag-card.green { background: linear-gradient(180deg, #F0FBF4 0%, #F6FCF8 100%); border-color: #CDEBD8; }

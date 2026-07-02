@@ -4338,7 +4338,7 @@ function renderCompanyMeta() {
 // renderers (renderForensicCardGrid / renderForensicTimeSeriesTable). con/std
 // are cached per mode so toggling is instant after the first fetch.
 
-const FP_TABS = ['Single Page', 'Ratios', 'Capital Structure', 'Directors and Auditor', 'Capital History', 'Dividend History', 'ESOP'];
+const FP_TABS = ['Analysis', 'Ratios', 'Capital Structure', 'Directors and Auditor', 'Capital History', 'Dividend History', 'ESOP'];
 
 // Fetch the Forensic_DetailedTables data for a mode and render. Cache hit →
 // render instantly (no refetch). Guarded against stale responses by id+mode.
@@ -4447,15 +4447,22 @@ function renderForensicPageTables() {
   if (!data.length) return '<div class="fr-placeholder"><p>No forensic data available for this company.</p></div>';
 
   const sectionHtml = (tab, i) => {
+    const tabName = String(tab.tabName || '');
     const name = displayForensicTabName(tab.tabName);
+    const aiKey = Object.keys(FP_SUMMARY_SECTIONS)
+      .find(k => FP_SUMMARY_SECTIONS[k].match.test(tabName));
+    // Compare-enabled tables (Earning Quality, Fund Flow, Working capital, Asset
+    // efficiency, Expense Analysis) get their own inner renderer — +Compare
+    // controls + chips + compare/normal table. Everything compare related lives
+    // inside that one section; nothing else on the page is touched.
+    if (aiKey && FP_SUMMARY_SECTIONS[aiKey].compare) {
+      return '<section class="fp-section" id="fp-sec-' + i + '" data-cmp-section="' + aiKey + '">'
+        + compareSectionInnerHtml(tab, fp, aiKey) + '</section>';
+    }
     const content = (Array.isArray(tab.tableContent) && tab.tableContent.length > 0)
       ? renderForensicCardGrid(tab)
       : renderForensicTimeSeriesTable(tab);
-    const isSh = /shareholding\s*pattern/i.test(String(tab.tabName || ''));
-    // Sections that get a "Generate AI Summary" button (Earning Quality, Fund
-    // Flow, Working capital) — resolve the section key from the registry.
-    const aiKey = Object.keys(FP_SUMMARY_SECTIONS)
-      .find(k => FP_SUMMARY_SECTIONS[k].match.test(String(tab.tabName || '')));
+    const isSh = /shareholding\s*pattern/i.test(tabName);
     let head;
     let belowHead = '';
     if (isSh) {
@@ -4471,8 +4478,7 @@ function renderForensicPageTables() {
         + '</div></div></div>';
       belowHead = '<div class="fp-ai" data-fp-ai="sh">' + forensicAIPanelHtml('sh') + '</div>';
     } else if (aiKey) {
-      // Earning Quality / Fund Flow / Working capital: "Generate AI Summary"
-      // button on the heading line, summary rendered directly below the header.
+      // Capital structure / Du Pont: "Generate AI Summary" button only.
       head = '<div class="fp-sec-head"><h3 class="fp-sec-title">' + escapeHtml(name) + '</h3>'
         + forensicAIBtnHtml(aiKey) + '</div>';
       belowHead = '<div class="fp-ai" data-fp-ai="' + aiKey + '">' + forensicAIPanelHtml(aiKey) + '</div>';
@@ -4484,23 +4490,22 @@ function renderForensicPageTables() {
 
   const chips = '<nav class="fp-chips" aria-label="Jump to table">'
     + data.map((tab, i) => {
-        // The Snapshot section is hidden; its pill becomes "Green & Red Flags"
-        // and jumps to the flag cards at the top instead of a table section.
+        // The Snapshot section is hidden; its pill is the "Summary" pill and
+        // jumps to the flag cards (which now sit directly below the pill bar).
         const isSnap = /snapshot/i.test(String(tab.tabName || ''));
-        const label = isSnap ? escapeHtml('Green & Red Flags') : escapeHtml(displayForensicTabName(tab.tabName));
+        const label = isSnap ? escapeHtml('Summary') : escapeHtml(displayForensicTabName(tab.tabName));
         const target = isSnap ? 'fp-flags' : ('fp-sec-' + i);
         return '<button type="button" class="fp-chip" data-fpjump="' + target + '">' + label + '</button>';
       }).join('')
     + '</nav>';
 
   // Render every section EXCEPT Snapshot (kept out of the page on purpose;
-  // re-enable by removing the isSnap skip below). Section ids keep their data
-  // index so the jump pills stay aligned. Pills now sit directly below the
-  // flag cards since the Snapshot table no longer precedes them.
+  // re-enable by removing the isSnap skip below). The jump-pill bar now sits
+  // ABOVE the flag cards; the "Summary" pill scrolls down to those cards.
   const sections = data
     .map((tab, i) => (/snapshot/i.test(String(tab.tabName || '')) ? '' : sectionHtml(tab, i)))
     .join('');
-  return forensicFlagsRowHtml() + chips + sections;
+  return chips + forensicFlagsRowHtml() + sections;
 }
 
 function wireForensicPage() {
@@ -4540,23 +4545,421 @@ function wireForensicPage() {
   // Retry after an error.
   const retry = host.querySelector('[data-fpretry]');
   if (retry) retry.onclick = () => loadForensicSinglePage(state.company.fp.mode);
-  // Earning Quality / Fund Flow — Generate / Regenerate / Retry the AI summary.
+  // Capital structure / Du Pont — Generate / Regenerate the AI summary. The
+  // compare-enabled tables (eq/ff/wc/ae/ea) wire their own AI button inside
+  // wireCompareSection so they aren't double-bound on section re-render.
   host.querySelectorAll('[data-fp-ai-btn]').forEach(btn => {
     const key = btn.getAttribute('data-fp-ai-btn');
+    if (isCompareKey(key)) return;
     btn.addEventListener('click', () => {
       if (btn.disabled) return;
       requestForensicSummary(key, fpSummaryState(key).status === 'done');  // done → force regenerate
     });
   });
+  wireCompareSections();
   // The 6 placeholder tabs are disabled; no handlers needed.
 }
 
 // Reset Single Page state for a freshly-selected company and load Consolidated.
 function startForensicSinglePage() {
-  state.company.fp = { mode: 'con', data: { con: null, std: null }, loading: false, error: null, buttonStatus: { con: true, std: true }, abortController: null, shYearly: false, summaries: { con: {}, std: {} }, summaryAbort: {}, flags: { con: null, std: null }, flagsAbort: null };
+  state.company.fp = { mode: 'con', data: { con: null, std: null }, loading: false, error: null, buttonStatus: { con: true, std: true }, abortController: null, shYearly: false, summaries: { con: {}, std: {} }, summaryAbort: {}, flags: { con: null, std: null }, flagsAbort: null,
+    // Peer comparison. compare: independent per-table picker + peer list, keyed
+    // by section (eq/ff/wc/ae/ea). peerCache: shared payload cache keyed by
+    // company id so the same peer is fetched only once across all tables.
+    compare: freshCompareState(), peerCache: {} };
   const host = document.getElementById('forensicPage');
   if (host) host.hidden = false;
   loadForensicSinglePage('con');
+}
+
+/* ---- Peer comparison for cumulative tables ------------------------------
+   A "+ Compare" button on Earning Quality, Fund Flow, Working capital, Asset
+   efficiency and Expense Analysis lets the user add up to two peer companies
+   (three total). While comparing, the per-period history is hidden and the
+   table shows only the cumulative 3yr/5yr/10yr block per company, grouped by
+   company (all rows), with each company's own tint. Peer selection is
+   INDEPENDENT per table (fp.compare[key]); peer DATA is fetched once per
+   company (con→std) into a SHARED cache (fp.peerCache) — the same peer added to
+   several tables is fetched only once. Only the touched section re-renders. */
+
+// Which forensic tables get the +Compare treatment (must also be in FP_SUMMARY_SECTIONS).
+function isCompareKey(key) { return !!(FP_SUMMARY_SECTIONS[key] && FP_SUMMARY_SECTIONS[key].compare); }
+
+// Fresh per-table compare state (independent peers + picker per table).
+function freshCompareState() {
+  const mk = () => ({ peers: [], search: { open: false, query: '', results: [], loading: false, error: null, abort: null, timer: null, _view: [], highlighted: -1 } });
+  const out = {};
+  Object.keys(FP_SUMMARY_SECTIONS).forEach(k => { if (FP_SUMMARY_SECTIONS[k].compare) out[k] = mk(); });
+  return out;
+}
+
+// Normalise a metric name for cross-company row matching.
+function cmpNormMetric(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+
+const CMP_ACCENTS = ['#4F46E5', '#0D9488', '#B45309'];
+
+// Pull the cumulative (3/5/10yr) block out of any time-series tab, keyed by
+// metric name and year-span, mirroring renderForensicTimeSeriesTable's split.
+function extractCumulative(tab) {
+  const ct = (tab && tab.childTable) || [];
+  if (ct.length < 2) return { order: [], byMetric: {}, spans: [] };
+  const schema = ct[0];
+  const dataRows = ct.slice(1);
+  const allRowKeys = ['Row1','Row2','Row3','Row4','Row5','Row6','Row7','Row8','Row9','Row10','Row11'];
+  const activeKeys = allRowKeys.filter(key => {
+    if (parseForensicMetric(schema[key]).name) return true;
+    return dataRows.some(r => String(r[key] || '').trim());
+  });
+  const cagrRows = dataRows.filter(r => isForensicPeriodLabel(String(r.description || '').trim()));
+  const spanOf = r => parseInt(String(r.description || '').replace(/[^\d]/g, ''), 10) || 0;
+  cagrRows.sort((a, b) => spanOf(a) - spanOf(b));
+  const spans = cagrRows.map(spanOf);
+  const order = [];
+  const byMetric = {};
+  activeKeys.forEach(key => {
+    const name = parseForensicMetric(schema[key]).name || ('Col ' + key.slice(3));
+    order.push(name);
+    const spanCells = {};
+    cagrRows.forEach((row, idx) => { spanCells[spans[idx]] = parseForensicCell(row[key]); });
+    byMetric[cmpNormMetric(name)] = spanCells;
+  });
+  return { order, byMetric, spans };
+}
+
+// Final tint for a compare cell. Earning Quality colours by sign (its feed
+// doesn't tint), every other table keeps the API-flagged tint — matching each
+// table's normal rendering.
+function cmpTint(isEq, cell) {
+  if (!cell) return '';
+  if (!String(cell.value || '').trim().length) return '';
+  if (isEq) { const n = forensicNumericValue(cell.value); return n == null ? '' : (n > 0 ? ' fr-pos' : (n < 0 ? ' fr-neg' : '')); }
+  return cell.tint === 'pos' ? ' fr-pos' : (cell.tint === 'neg' ? ' fr-neg' : '');
+}
+
+// Resolve a peer's cumulative extract for a given section from the shared cache.
+function peerExtractFor(fp, peerId, key) {
+  const entry = fp.peerCache[peerId];
+  if (!entry) return { status: 'loading' };
+  if (entry.status !== 'done') return { status: entry.status, error: entry.error };
+  if (!entry.extract) entry.extract = {};
+  if (!(key in entry.extract)) {
+    const sec = FP_SUMMARY_SECTIONS[key];
+    const tab = entry.data.find(t => sec.match.test(String(t.tabName || '')));
+    entry.extract[key] = tab ? extractCumulative(tab) : null;
+  }
+  const ex = entry.extract[key];
+  if (!ex) return { status: 'error', error: 'No ' + FP_SUMMARY_SECTIONS[key].tab + ' data' };
+  return { status: 'done', extract: ex };
+}
+
+// The compare table: rows = metrics, columns = companies × cumulative 3/5/10.
+function renderCompareTable(baseTab, fp, key) {
+  const base = extractCumulative(baseTab);
+  const spans = base.spans.length ? base.spans : [3, 5, 10];
+  const typeLabel = cagrGroupLabel(baseTab.tabName);   // CAGR / Averages / Cumulative…
+  const isEq = /earnings?\s*quality/i.test(String(baseTab.tabName || ''));
+  const baseName = (state.company.data && state.company.data.CompanyName) || 'Current company';
+  const cols = [{ id: '__base', name: baseName, status: 'done', extract: base }];
+  fp.compare[key].peers.forEach(p => {
+    const pe = peerExtractFor(fp, p.id, key);
+    cols.push({ id: p.id, name: p.name, status: pe.status, extract: pe.extract, error: pe.error });
+  });
+
+  let h = '<tr class="fr-thead-super"><th class="fr-th-period fr-th-super-blank" rowspan="2">Description</th>';
+  cols.forEach((c, ci) => {
+    h += '<th class="fr-cagr-super ff-cmp-grp' + (ci > 0 ? ' ff-co-start' : '') + '" colspan="' + spans.length + '">'
+      + '<span class="ff-co-dot" style="background:' + CMP_ACCENTS[ci % 3] + '"></span>'
+      + '<span class="ff-cmp-co">' + escapeHtml(c.name) + '</span>'
+      + '<span class="ff-cmp-type">' + escapeHtml(typeLabel) + '</span></th>';
+  });
+  h += '</tr><tr>';
+  cols.forEach((c, ci) => {
+    spans.forEach((s, si) => {
+      h += '<th class="fr-cagr-col' + (si === 0 && ci > 0 ? ' ff-co-start' : '') + '">' + escapeHtml(s + 'yrs') + '</th>';
+    });
+  });
+  h += '</tr>';
+
+  const body = base.order.map(name => {
+    let tds = '<td class="fr-td-period fr-td-metric">' + escapeHtml(name) + '</td>';
+    cols.forEach((c, ci) => {
+      const lead = ci > 0 ? ' ff-co-start' : '';
+      if (c.status === 'loading') {
+        tds += '<td class="ff-co-wait' + lead + '" colspan="' + spans.length + '"><span class="ff-skel"></span></td>';
+      } else if (c.status === 'error') {
+        tds += '<td class="ff-co-wait' + lead + '" colspan="' + spans.length + '" title="' + escapeHtml(c.error || 'Unavailable') + '">—</td>';
+      } else {
+        const rec = c.extract && c.extract.byMetric[cmpNormMetric(name)];
+        spans.forEach((s, si) => {
+          const cell = rec && rec[s];
+          const val = cell ? cell.value : '';
+          const hasVal = String(val || '').trim().length > 0;
+          const tint = cmpTint(isEq, cell);
+          const cls = (hasVal ? 'fr-cagr-col' + tint : '') + (si === 0 && ci > 0 ? ' ff-co-start' : '');
+          tds += '<td class="' + cls.trim() + '">' + escapeHtml(bracketNegative(val)) + '</td>';
+        });
+      }
+    });
+    return '<tr>' + tds + '</tr>';
+  }).join('');
+
+  return '<div class="fr-table-scroll"><table class="fr-table fr-table-transposed fr-cagr-conditional ff-compare-table">'
+    + '<thead>' + h + '</thead><tbody>' + body + '</tbody></table></div>';
+}
+
+// Full inner HTML of a compare-enabled <section> (head + panel + chips + table).
+function compareSectionInnerHtml(tab, fp, key) {
+  const name = displayForensicTabName(tab.tabName);
+  const c = fp.compare[key];
+  const comparing = c.peers.length > 0;
+  const canAdd = c.peers.length < 2;
+  const plus = '<svg class="ff-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+  const cmpBtn = '<button type="button" class="fp-cmp-btn" data-cmp-btn="' + key + '"' + (canAdd ? '' : ' disabled') + '>'
+    + plus + '<span>' + (comparing ? 'Add company' : 'Compare') + '</span></button>';
+  const head = '<div class="fp-sec-head"><h3 class="fp-sec-title">' + escapeHtml(name) + '</h3>'
+    + '<div class="fp-sec-head-actions">'
+    + '<div class="ff-search" data-cmp-search="' + key + '">' + cmpSearchInnerHtml(fp, key) + '</div>'
+    + cmpBtn
+    + (comparing ? '' : forensicAIBtnHtml(key))
+    + '</div></div>';
+  const aiPanel = comparing ? '' : '<div class="fp-ai" data-fp-ai="' + key + '">' + forensicAIPanelHtml(key) + '</div>';
+  const chips = comparing ? cmpChipsHtml(fp, key) : '';
+  const normal = (Array.isArray(tab.tableContent) && tab.tableContent.length > 0) ? renderForensicCardGrid(tab) : renderForensicTimeSeriesTable(tab);
+  const body = comparing ? renderCompareTable(tab, fp, key) : normal;
+  return head + aiPanel + chips + '<div class="ff-body">' + body + '</div>';
+}
+
+function cmpSearchInnerHtml(fp, key) {
+  const s = fp.compare[key].search;
+  if (!s.open) return '';
+  return '<input type="text" class="ff-search-in" data-cmp-search-in placeholder="Search a company to compare…" value="' + escapeHtml(s.query) + '" autocomplete="off" spellcheck="false">'
+    + '<div class="ff-menu" data-cmp-menu>' + cmpMenuHtml(fp, key) + '</div>';
+}
+
+function cmpMenuHtml(fp, key) {
+  const s = fp.compare[key].search;
+  s._view = [];
+  if (s.query.trim().length < 2) return '<div class="ff-menu-note">Type at least 2 characters…</div>';
+  if (s.loading) return '<div class="ff-menu-note"><span class="gs-spinner"></span> Searching…</div>';
+  if (s.error) return '<div class="ff-menu-note">' + escapeHtml(s.error) + '</div>';
+  const taken = new Set();
+  const baseId = resolveCompanyId(state.company.data);
+  if (baseId) taken.add(String(baseId));
+  fp.compare[key].peers.forEach(p => taken.add(String(p.id)));
+  const list = (s.results || []).filter(c => { const id = resolveCompanyId(c); return id && !taken.has(String(id)); }).slice(0, 8);
+  s._view = list;
+  if (s.highlighted >= list.length) s.highlighted = list.length - 1;
+  if (!list.length) return '<div class="ff-menu-note">No other companies match</div>';
+  return list.map((c, i) => '<button type="button" class="ff-menu-item' + (i === s.highlighted ? ' is-hl' : '') + '" data-cmp-pick="' + i + '">'
+    + escapeHtml(c.CompanyName || '') + '</button>').join('');
+}
+
+function cmpChipsHtml(fp, key) {
+  const baseName = (state.company.data && state.company.data.CompanyName) || 'Current company';
+  const chips = [{ id: '__base', name: baseName, base: true }].concat(fp.compare[key].peers.map(p => ({ id: p.id, name: p.name })));
+  const inner = chips.map((c, ci) => {
+    const dot = '<span class="ff-co-dot" style="background:' + CMP_ACCENTS[ci % 3] + '"></span>';
+    if (c.base) return '<span class="ff-chip ff-chip-base">' + dot + escapeHtml(c.name) + '<span class="ff-chip-tag">CURRENT</span></span>';
+    return '<span class="ff-chip">' + dot + escapeHtml(c.name)
+      + '<button type="button" class="ff-chip-x" data-cmp-remove="' + escapeHtml(String(c.id)) + '" aria-label="Remove">&times;</button></span>';
+  }).join('');
+  return '<div class="ff-cmp-bar"><span class="ff-cmp-lbl">Comparing</span>' + inner
+    + '<span class="ff-cmp-hint">' + fp.compare[key].peers.length + '/2 peers · cumulative only</span></div>';
+}
+
+// Re-render ONLY one compare section (compare changes never touch the rest).
+function rerenderCompareSection(key) {
+  const host = document.getElementById('forensicPage');
+  if (!host) return;
+  const fp = state.company.fp;
+  const data = (fp && fp.data[fp.mode]) || [];
+  const sc = FP_SUMMARY_SECTIONS[key];
+  const tab = data.find(t => sc.match.test(String(t.tabName || '')));
+  const sec = host.querySelector('[data-cmp-section="' + key + '"]');
+  if (!sec || !tab) return;
+  sec.innerHTML = compareSectionInnerHtml(tab, fp, key);
+  wireCompareSection(key);
+}
+
+// Re-render every compare section that currently includes the given peer id.
+function rerenderCompareSectionsForPeer(id) {
+  const fp = state.company.fp;
+  if (!fp || !fp.compare) return;
+  Object.keys(fp.compare).forEach(key => {
+    if (fp.compare[key].peers.some(p => String(p.id) === String(id))) rerenderCompareSection(key);
+  });
+}
+
+function wireCompareSections() {
+  const host = document.getElementById('forensicPage');
+  if (!host) return;
+  host.querySelectorAll('[data-cmp-section]').forEach(sec => wireCompareSection(sec.getAttribute('data-cmp-section')));
+}
+
+function wireCompareSection(key) {
+  const host = document.getElementById('forensicPage');
+  if (!host) return;
+  const sec = host.querySelector('[data-cmp-section="' + key + '"]');
+  if (!sec) return;
+  const fp = state.company.fp;
+  const cbtn = sec.querySelector('[data-cmp-btn]');
+  if (cbtn) cbtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (cbtn.disabled) return;
+    const s = fp.compare[key].search;
+    s.open = !s.open; s.query = ''; s.results = []; s.error = null; s.loading = false; s.highlighted = -1;
+    const sh = sec.querySelector('[data-cmp-search]');
+    if (sh) sh.innerHTML = cmpSearchInnerHtml(fp, key);
+    wireCmpSearch(sec, fp, key);
+  });
+  const aibtn = sec.querySelector('[data-fp-ai-btn]');
+  if (aibtn) aibtn.addEventListener('click', () => { if (aibtn.disabled) return; requestForensicSummary(key, fpSummaryState(key).status === 'done'); });
+  sec.querySelectorAll('[data-cmp-remove]').forEach(b => b.addEventListener('click', () => {
+    const id = b.getAttribute('data-cmp-remove');
+    fp.compare[key].peers = fp.compare[key].peers.filter(p => String(p.id) !== String(id));
+    rerenderCompareSection(key);
+  }));
+  wireCmpSearch(sec, fp, key);
+}
+
+function wireCmpSearch(sec, fp, key) {
+  const input = sec.querySelector('[data-cmp-search-in]');
+  if (input) {
+    input.addEventListener('input', () => {
+      const s = fp.compare[key].search;
+      s.query = input.value; s.highlighted = -1;
+      clearTimeout(s.timer);
+      const q = input.value.trim();
+      if (q.length < 2) { s.results = []; s.loading = false; s.error = null; updateCmpMenu(sec, fp, key); return; }
+      s.loading = true; s.error = null; updateCmpMenu(sec, fp, key);
+      s.timer = setTimeout(() => cmpFetchPeers(q, sec, fp, key), 300);
+    });
+    input.addEventListener('keydown', e => {
+      const s = fp.compare[key].search;
+      const n = (s._view || []).length;
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (!n) return; s.highlighted = (s.highlighted + 1) % n; cmpHighlight(sec, s); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (!n) return; s.highlighted = (s.highlighted - 1 + n) % n; cmpHighlight(sec, s); }
+      else if (e.key === 'Enter') { e.preventDefault(); const i = s.highlighted >= 0 ? s.highlighted : 0; const co = s._view && s._view[i]; if (co) cmpAddPeer(co, fp, key); }
+      else if (e.key === 'Escape') { e.preventDefault(); s.open = false; const sh = sec.querySelector('[data-cmp-search]'); if (sh) sh.innerHTML = ''; }
+    });
+    input.focus();
+    const v = input.value; input.value = ''; input.value = v;  // caret → end
+  }
+  cmpWirePicks(sec, fp, key);
+}
+
+// Toggle the highlight class without re-rendering the menu (keeps input focus).
+function cmpHighlight(sec, s) {
+  const items = sec.querySelectorAll('.ff-menu-item');
+  items.forEach((el, i) => el.classList.toggle('is-hl', i === s.highlighted));
+  const cur = items[s.highlighted];
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+}
+
+function cmpWirePicks(sec, fp, key) {
+  sec.querySelectorAll('[data-cmp-pick]').forEach(b => {
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      const idx = parseInt(b.getAttribute('data-cmp-pick'), 10);
+      const co = fp.compare[key].search._view && fp.compare[key].search._view[idx];
+      if (co) cmpAddPeer(co, fp, key);
+    });
+    b.addEventListener('mouseenter', () => {
+      const idx = parseInt(b.getAttribute('data-cmp-pick'), 10);
+      if (!Number.isNaN(idx)) { fp.compare[key].search.highlighted = idx; cmpHighlight(sec, fp.compare[key].search); }
+    });
+  });
+}
+
+function updateCmpMenu(sec, fp, key) {
+  const menu = sec.querySelector('[data-cmp-menu]');
+  if (menu) menu.innerHTML = cmpMenuHtml(fp, key);
+  cmpWirePicks(sec, fp, key);
+}
+
+async function cmpFetchPeers(q, sec, fp, key) {
+  const s = fp.compare[key].search;
+  if (s.abort) s.abort.abort();
+  s.abort = new AbortController();
+  const signal = s.abort.signal;
+  try {
+    const res = await fetch(SEARCH_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ Search: q, Type: '', sector_id: [], industry_id: [], company_id: [] }),
+      signal,
+    });
+    if (signal.aborted) return;
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (signal.aborted) return;
+    s.results = Array.isArray(json) ? json : [];
+    s.loading = false;
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    s.error = 'Search failed'; s.loading = false; s.results = [];
+  }
+  if (state.company.fp !== fp || !s.open) return;
+  updateCmpMenu(sec, fp, key);
+}
+
+function cmpAddPeer(co, fp, key) {
+  const peers = fp.compare[key].peers;
+  if (peers.length >= 2) return;
+  const id = resolveCompanyId(co);
+  if (!id || peers.some(p => String(p.id) === String(id))) return;
+  const peer = { id: String(id), name: co.CompanyName || 'Company', co };
+  peers.push(peer);
+  const s = fp.compare[key].search;
+  s.open = false; s.query = ''; s.results = []; s._view = []; s.highlighted = -1;
+  rerenderCompareSection(key);   // show the new column immediately (loading/cached)
+  fetchPeerData(peer);           // fetch once per company, then fill
+}
+
+// Fetch a peer's FULL forensic payload once (con→std fallback), cached by
+// company id in fp.peerCache and shared across every compare table.
+async function fetchPeerData(peer) {
+  const fp = state.company.fp;
+  const id = peer.id;
+  const existing = fp.peerCache[id];
+  if (existing && (existing.status === 'done' || existing.status === 'loading')) {
+    if (existing.status === 'done') rerenderCompareSectionsForPeer(id);  // reuse cache instantly
+    return;
+  }
+  const entry = { status: 'loading', data: null, error: null, extract: {} };
+  fp.peerCache[id] = entry;
+  const cid = resolveCompanyId(peer.co);
+  if (!cid) { entry.status = 'error'; entry.error = 'No company id'; if (state.company.fp === fp) rerenderCompareSectionsForPeer(id); return; }
+
+  const call = async type => {
+    const res = await fetch(FORENSIC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ CompanyId: String(cid), type }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (!json || json.status !== 1) throw new Error((json && json.msg) || 'API failure');
+    return { data: Array.isArray(json.Data) ? json.Data : [], bs: json.button_status || {} };
+  };
+  try {
+    let data = null;
+    try {
+      const con = await call('con');
+      const conUnavail = con.bs.con === false || con.data.length === 0;
+      data = conUnavail ? null : con.data;
+      if (!data && con.bs.std !== false) { const std = await call('std'); data = std.data; }
+    } catch (e1) {
+      const std = await call('std'); data = std.data;
+    }
+    if (state.company.fp !== fp) return;
+    if (!data || !data.length) { entry.status = 'error'; entry.error = 'No data'; }
+    else { entry.status = 'done'; entry.data = data; }
+  } catch (e) {
+    if (state.company.fp !== fp) return;
+    entry.status = 'error'; entry.error = (e && e.message) || 'Network error';
+  }
+  if (state.company.fp === fp) rerenderCompareSectionsForPeer(id);
 }
 
 /* ---- Forensic AI summary (Earning Quality + Fund Flow) ----
@@ -4567,12 +4970,12 @@ function startForensicSinglePage() {
    call happens server-side (FORENSIC_SUMMARY_URL) with the prompt chosen from
    the section's tab; the browser only ships the table text + company name. */
 const FP_SUMMARY_SECTIONS = {
-  eq: { match: /earnings?\s*quality/i, tab: 'Earnings Quality',         empty: 'No Earning Quality data to summarise.' },
-  ff: { match: /fund\s*flow/i,         tab: 'Fund Flow',                empty: 'No Fund Flow data to summarise.' },
-  wc: { match: /working\s*capital/i,   tab: 'Working capital analysis', empty: 'No Working capital data to summarise.' },
-  ae: { match: /asset\s*efficiency/i,  tab: 'Asset efficiency',         empty: 'No Asset efficiency data to summarise.' },
+  eq: { match: /earnings?\s*quality/i, tab: 'Earnings Quality',         empty: 'No Earning Quality data to summarise.', compare: true },
+  ff: { match: /fund\s*flow/i,         tab: 'Fund Flow',                empty: 'No Fund Flow data to summarise.', compare: true },
+  wc: { match: /working\s*capital/i,   tab: 'Working capital analysis', empty: 'No Working capital data to summarise.', compare: true },
+  ae: { match: /asset\s*efficiency/i,  tab: 'Asset efficiency',         empty: 'No Asset efficiency data to summarise.', compare: true },
   cs: { match: /capital\s*structure/i, tab: 'Capital structure',         empty: 'No Capital structure data to summarise.' },
-  ea: { match: /expense\s*analysis/i,  tab: 'Expense Analysis',          empty: 'No Expense Analysis data to summarise.' },
+  ea: { match: /expense\s*analysis/i,  tab: 'Expense Analysis',          empty: 'No Expense Analysis data to summarise.', compare: true },
   dp: { match: /du\s*pont/i,           tab: 'Du Pont Analysis',          empty: 'No Du Pont Analysis data to summarise.' },
   sh: { match: /shareholding\s*pattern/i, tab: 'ShareHolding Pattern (In %)', empty: 'No ShareHolding Pattern data to summarise.', yearlyToggle: true },
 };
@@ -4954,6 +5357,21 @@ document.addEventListener('click', e => {
       state.gsearch.open = false;
       renderSearchDropdown();
     }
+  }
+  // Compare "+ Compare" pickers (per table): close when clicking outside a
+  // section's own search host/button.
+  const fp = state.company && state.company.fp;
+  if (fp && fp.compare) {
+    Object.keys(fp.compare).forEach(key => {
+      const s = fp.compare[key].search;
+      if (s && s.open
+          && !e.target.closest('[data-cmp-search="' + key + '"]')
+          && !e.target.closest('[data-cmp-btn="' + key + '"]')) {
+        s.open = false;
+        const sh = document.querySelector('#forensicPage [data-cmp-section="' + key + '"] [data-cmp-search]');
+        if (sh) sh.innerHTML = '';
+      }
+    });
   }
 });
 
@@ -6806,7 +7224,14 @@ function renderForensicCategoryTabs(categories, tabsWithRed) {
 // h3, and aria-labels all show the same string.
 function displayForensicTabName(name) {
   const s = String(name || '');
+  // Display labels for the Single Page pills / section headers (each pill and
+  // its section header share this one label).
   if (/earnings?\s*quality/i.test(s)) return 'Earning Quality';
+  if (/^\s*averages\s*$/i.test(s)) return 'Average';
+  if (/working\s*capital/i.test(s)) return 'Working Capital Analysis';
+  if (/capital\s*structure/i.test(s)) return 'Capital Structure';
+  if (/expense\s*analysis/i.test(s)) return 'Expenses Analysis';
+  if (/shareholding\s*pattern/i.test(s)) return 'ShareHolding Pattern (In%)';
   return s;
 }
 
