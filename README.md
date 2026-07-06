@@ -113,6 +113,28 @@ unselected watchlists' company counts come from the local cache (or show 0
 until first selected after a cache clear), since accurate counts for all
 watchlists would require one call per watchlist.
 
+### Feature — Collapsible sidebar (icon rail)
+
+The topbar hamburger (`#sidebarToggle`, left of the search bar) toggles the
+sidebar between the full 201px column and a **64px icon rail** by flipping a
+`sidebar-collapsed` class on `.app`. Because the shell is a CSS grid
+(`grid-template-columns`), the `1fr` main area **reflows to fill** the freed
+space automatically — no blank gap, and Daily Reading / Forensic / company views
+are untouched, just wider. A `.2s` transition animates the width.
+
+- **Starts collapsed on every load** — the class is set in the markup, so there's
+  no expand→collapse flash and no persisted state (per spec).
+- **Collapsed** hides the section headings (`.nav-label`), nav labels
+  (`.nav-text` spans), the brand wordmark (`.brand-text`, logo mark kept), and
+  the profile name/email (`.sidebar-user`, round avatar kept). Icons centre in
+  the rail, and the active nav still reads as selected on its icon (highlighted
+  tile + accent icon). Each icon exposes its label as a native hover tooltip;
+  expanding removes the tooltips (the text is visible again).
+- **Expanded** restores the previous layout exactly (icon + label on one line).
+- Wiring lives in `wireSidebarToggle()` in `legacyApp.js`; all visuals are CSS
+  under `.sidebar-collapsed`. On mobile (≤820px) the sidebar is hidden and the
+  grid is single-column for both states.
+
 ### Update — sidebar +1px and Daily Reading as the #home page
 
 - The sidebar column width went from `200px` to `201px` in `.app`'s
@@ -149,11 +171,20 @@ companies on Overview.
 
 The Forensic page now shows ONLY the company name section. After picking a
 company from the top search in the Forensic flow, the Company view opens with
-just its `.co-header` card — name, NSE/BSE badges, sector · industry · ISIN,
-description, and the live-price panel — with the tab bar and all panes hidden
-(via a `cv-header-only` class on `#companyView`) and the
-`Forensic_DetailedTables` API call skipped. The normal top-search company page
-is unchanged: full tab bar, Overview rendering, and the Forensic tab + API.
+just its `.co-header` card — name, NSE/BSE badges, sector · industry · ISIN —
+with the tab bar and all panes hidden (via a `cv-header-only` class on
+`#companyView`) and the `Forensic_DetailedTables` API call skipped. The normal
+top-search company page is unchanged: full tab bar, Overview rendering, and the
+Forensic tab + API.
+
+On the Forensic page the demo **live-price panel** (`.co-price` — price, change,
+52W range, sparkline, and the "Live Price · demo" / "wire live price API" labels)
+is **hidden**, and the card collapses to a single full-width column of
+company-note info (`#companyView.cv-header-only .co-header { grid-template-columns:
+1fr }` + `.co-price { display:none }`). This is CSS-only and scoped to the
+forensic (`cv-header-only`) state — the panel stays fully intact on the normal
+Company view, and the markup is untouched so a real live-price API can be wired in
+later. The card simply gets shorter, so the pill bar and tables below flow up.
 
 ### Feature — Forensic card enriched from companynote
 

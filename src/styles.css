@@ -56,6 +56,15 @@
   #companyView.cv-header-only .cv-pane,
   #companyView.cv-header-only .co-desc { display: none; }
 
+  /* Forensic page: drop the demo live-price panel (price, change, 52W range,
+     sparkline, and its labels) and collapse the card to a single full-width
+     column of company-note info. The card keeps its styling and simply gets
+     shorter, so the pill bar + tables below flow up. The panel stays intact on
+     the normal Company view; the markup is untouched so a real live-price API
+     can be wired in later. */
+  #companyView.cv-header-only .co-header { grid-template-columns: 1fr; }
+  #companyView.cv-header-only .co-price { display: none; }
+
   /* Exchange chips that carry a deep-link (Forensic card) become clickable.
      Keeps the existing chip colour; just adds the affordance. */
   .chip.chip-link { cursor: pointer; transition: filter .12s; }
@@ -292,6 +301,24 @@
   .nav-item.active { background: var(--bg-card); border-left-color: var(--accent); box-shadow: 0 1px 2px rgba(0,0,0,0.04); color: var(--ink); font-weight: 600; }
   .nav-item svg { width: 16px; height: 16px; color: var(--muted); flex-shrink: 0; }
   .nav-item.active svg { color: var(--ink-2); }
+
+  /* ---- Collapsible sidebar (icon rail) ----
+     Toggled by the topbar hamburger via a .sidebar-collapsed class on .app.
+     The grid column shrinks to a 64px rail and the 1fr main area reflows to
+     fill it (no blank space); labels/headings/brand-text/profile-text hide,
+     icons centre, and the active nav shows on the icon itself. */
+  .app { transition: grid-template-columns .2s ease; }
+  .app.sidebar-collapsed { grid-template-columns: 64px 1fr; }
+  .sidebar-collapsed .sidebar { padding-left: 8px; padding-right: 8px; overflow-x: hidden; }
+  .sidebar-collapsed .brand { justify-content: center; gap: 0; padding: 4px 0 11px; }
+  .sidebar-collapsed .brand-text { display: none; }
+  .sidebar-collapsed .nav-label { display: none; }
+  .sidebar-collapsed .nav-text { display: none; }
+  .sidebar-collapsed .nav-item { justify-content: center; gap: 0; padding: 9px 0; margin: 0 0 2px; border-left: none; border-radius: var(--radius-sm); }
+  .sidebar-collapsed .nav-item.active { background: var(--bg-card); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+  .sidebar-collapsed .nav-item.active svg { color: var(--accent); }
+  .sidebar-collapsed .sidebar-bottom { justify-content: center; padding: 8px 0; gap: 0; }
+  .sidebar-collapsed .sidebar-user, .sidebar-collapsed .sidebar-user-menu-wrap { display: none; }
 
   .main { min-width: 0; }
 
@@ -2529,4 +2556,4 @@
     #companyView .co-price { border-left: none; padding-left: 0; border-top: 1px solid var(--line); padding-top: 14px; align-items: flex-start; }
   }
 
-  @media (max-width: 820px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } }
+  @media (max-width: 820px) { .app, .app.sidebar-collapsed { grid-template-columns: 1fr; } .sidebar { display: none; } }

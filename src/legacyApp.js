@@ -9629,6 +9629,31 @@ function handleAvatarFile(file) {
   });
 })();
 
+/* ---- Collapsible sidebar ----
+   The topbar hamburger toggles a .sidebar-collapsed class on .app; the grid
+   column shrinks to a 64px icon rail and the 1fr main area reflows to fill it
+   (no blank space, no content change). The app starts collapsed on every load
+   (class set in the markup, so there's no expand→collapse flash and no
+   persistence). While collapsed, each nav icon exposes its label as a native
+   hover tooltip; expanded nav items don't need one. */
+(function wireSidebarToggle() {
+  const app = document.querySelector('.app');
+  const btn = document.getElementById('sidebarToggle');
+  if (!app || !btn) return;
+  const navs = Array.from(app.querySelectorAll('.sidebar .nav-item'));
+  const sync = () => {
+    const collapsed = app.classList.contains('sidebar-collapsed');
+    btn.setAttribute('aria-expanded', String(!collapsed));
+    navs.forEach(a => {
+      const t = a.querySelector('.nav-text');
+      if (collapsed && t) a.setAttribute('title', t.textContent.trim());
+      else a.removeAttribute('title');
+    });
+  };
+  btn.addEventListener('click', () => { app.classList.toggle('sidebar-collapsed'); sync(); });
+  sync();   // markup starts collapsed → set initial tooltips + aria
+})();
+
 /* ---- Branding area = home button ----
    Clicking the logo/wordmark (or pressing Enter/Space when it's focused)
    navigates to the Daily Reading HOME page, the same destination as the
