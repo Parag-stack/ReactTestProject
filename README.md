@@ -219,9 +219,9 @@ called on the normal company page).
 ### Feature — Forensic page "Analysis" tab (Forensic_DetailedTables)
 
 Below the company header card on the Forensic page there's now a tab bar:
-`Analysis | Ratios | Capital Structure | Directors and Auditor | Capital
-History | Dividend History | ESOP`. Analysis (formerly "Single Page") is active;
-the other six are greyed-out/disabled placeholders.
+`Analysis | Ratios | Directors and Auditor | Capital History | Dividend
+History | ESOP`. Analysis (formerly "Single Page") is active and Ratios is live;
+the other four are greyed-out/disabled placeholders.
 
 The Analysis tab integrates `Forensic_DetailedTables` (`POST` with
 `{ CompanyId, type }`, CompanyId mapped from the search result's `CompanyID`):
@@ -250,6 +250,111 @@ The Analysis tab integrates `Forensic_DetailedTables` (`POST` with
 
 Scope: Forensic page only. The normal company page's Forensic tab is unchanged
 (`#forensicPage` is hidden there).
+
+### Feature — Forensic > ESOP tab
+
+The **ESOP** tab (sixth and final tab) is a **chart-led dilution view** of employee
+stock allotments.
+
+- **Data**: `POST /api/forensic { Type:'ESOP', … }` — no con/std, cached per company
+  (`fp.esop`).
+- **Summary strip**: current shares, total ESOP shares added (sum of the allotments),
+  the share of current stock that came via ESOP (≈%), the allotment count, and span.
+- **Dilution chart**: a filled cumulative-shares **line chart** (Chart.js) over the
+  allotment dates, chronological (oldest → latest) so the dilution reads left-to-right.
+  Y-axis formatted in millions, full numbers in the tooltip. Each point is **labelled
+  above the line with the cumulative shares subscribed** (in millions, e.g. "62.40M"),
+  via the per-chart `chartjs-plugin-datalabels` (never registered globally, so other
+  charts are unaffected); the plot area has top padding + y-axis grace so labels aren't
+  clipped. The instance is tracked in `esopChartInstance` and **disposed** via
+  `destroyEsopChart()` (called at the top of `wireForensicPage` on every re-render and
+  recreated by `wireEsopChart()` only when the ESOP tab is active).
+- **Allotment detail**: below the chart, every allotment listed latest-first — date,
+  shares added (+), and the running cumulative total.
+
+Implementation in `legacyApp.js`: `loadForensicEsop()`, `parseEsop()`,
+`renderForensicEsop()` / `renderEsopView()`, and `wireEsopChart` / `destroyEsopChart`.
+
+With this, **all six Forensic tabs are complete**: Analysis, Ratios, Directors and
+Auditor, Capital History, Dividend History, and ESOP.
+
+### Feature — Forensic > Dividend History tab
+
+The **Dividend History** tab (fifth tab) renders dividend-per-share by year as a
+**vertical timeline, latest first**, reusing the Capital History timeline skeleton.
+
+- **Data**: `POST /api/forensic { Type:'DH', … }` — no con/std, cached per company
+  (`fp.dividend`). Rows sorted by year descending.
+- **Summary strip**: latest DPS, current paying streak (consecutive recent years
+  with a dividend), years paid (M of N), and the year span.
+- **Timeline**: each year is a node. Paying years show **₹DPS** plus a **year-on-year
+  change chip** (▲ green / ▼ red / "Resumed" when a dividend returns after a gap);
+  zero years read as a muted **"No dividend"** (grey dot). This makes cuts,
+  droughts, and resumptions obvious at a glance.
+
+Implementation in `legacyApp.js`: `loadForensicDividend()`, `parseDividend()`,
+`renderForensicDividend()` / `renderDividendTimeline()`, routed from
+`renderForensicPage()` on `activeTab === 'dividend'`.
+
+### Feature — Forensic > Capital History tab
+
+The **Capital History** tab (fourth tab) renders the company's capital events as a
+**vertical timeline, latest first**.
+
+- **Data**: `POST /api/forensic { Type:'CH', CompanyID:'', childType:'',
+  dataFor:'con', companyID }` — no con/std split, single fetch cached per company
+  (`fp.capital`). Rows are sorted by parsed date (dd-Mon-yyyy) descending.
+- **Summary strip**: current shares (the latest event's cumulative subscribed
+  shares), total fund raised (sum of the Fund Raised column, in ₹ Cr), event count,
+  and the year span.
+- **Timeline**: each event is a node with a colour-coded dot + **reason badge**
+  (fund-raising events orange, bonus purple, offer-for-sale amber, schemes blue,
+  else grey), the **shares added with +/− colouring** (green add / red reduction),
+  and **fund raised** emphasised (or "No fresh capital" when zero). A sub-line
+  carries the remaining fields — cumulative shares, face value, share price, and
+  premium (shown only when non-zero).
+
+Implementation in `legacyApp.js`: `renderForensicPage()` routes `activeTab ===
+'capital'` to `renderForensicCapital()`; `loadForensicCapital()`, `parseCapital()`,
+`renderCapitalTimeline()`, plus the `chDateKey` / `chNum` / `chReasonStyle` helpers.
+
+### Feature — Forensic > Directors and Auditor tab
+
+The **Directors and Auditor** tab is now live (Analysis, Ratios, and Directors are
+the active tabs). It renders the latest-year board & key management as an
+innovative **card view** rather than a plain table.
+
+- **Data**: `POST /api/forensic` with `{ Type:'DIR', CompanyID:'', childType:'',
+  dataFor:'con', companyID }`. There's **no con/std split** for directors, so it's
+  a single fetch (no toggle/label), cached per company (`fp.directors`).
+- **Cards**: sorted by **annual remuneration, highest → lowest**. The **top 3**
+  are featured in a full-width first row (so the highest earners stand out), and
+  the rest flow in the denser grid (~6 per row) below. Each card has an initials
+  avatar (colour-cycled), name, reported designation, and **remuneration (₹ x Cr)
+  with a relative bar**. Everyone who shares the top pay gets a **"Top paid"** tag.
+  A salary tie is never split across the row boundary — if equal-pay members would
+  straddle it, the first row simply expands to keep them together.
+- **Name click → associations modal**: clicking a name opens a modal that fetches
+  `POST /api/BoardOfDirectorDetails { Type:'DIR', DirName, companyId }` and shows
+  that person's roles across other companies, **grouped by company** — each company
+  is a block (name + year range) listing its years with designation and pay. A
+  subtitle shows how many other companies they're associated with; companies are
+  ordered by recency. The modal has loading/empty/error states, a stale-fetch
+  guard, and closes on Esc/backdrop.
+- **Auditors** (below the directors): `POST /api/forensic { Type:'AH', … }` returns
+  a year→firm history. It's **grouped by audit firm** (current firm first, with a
+  **"Current"** badge), each firm showing the years it audited as chips — so auditor
+  changes/tenure are obvious at a glance (a governance signal). Clicking a firm
+  opens the same modal with `Type:'AH'`, showing the **other companies that firm has
+  audited**, grouped by company with year chips (no designation/pay, since auditors
+  have none). The modal is shared with the director click-through and switches its
+  columns and "Associated with / Audited" wording by kind.
+
+Implementation in `legacyApp.js`: `renderForensicPage()` routes `fp.activeTab ===
+'directors'` to `renderForensicDirectors()`; `loadForensicDirectors()`,
+`parseDirectors()`, `renderDirectorCards()`, `wireForensicDirectors()`, and the
+modal helpers (`openDirectorModal` / `closeDirectorModal` /
+`renderDirectorAssociations`).
 
 ### Feature — Forensic > Ratios tab
 
@@ -283,6 +388,28 @@ Analysis. Clicking it switches the forensic page to a clean, section-grouped
   two groups read as distinct; leading/trailing blanks are trimmed.
 - No good/bad colour-coding: the "better" direction differs per ratio, so values
   are shown neutrally to avoid misleading the reader.
+- **Chart view**: a **Table / Chart** toggle (top-left, defaults to Table) switches
+  every card to line charts. Each card draws **one small line chart per key metric**
+  (its own scale — clearest per field) per the spec: Return Ratios → ROE%, ROCE%;
+  Survival → Net Debt/Total Equity; Balance Sheet Health → Asset Turnover, Cash
+  Conversion Cycle; Financial → Dividend Payout; P&L → Interest Coverage,
+  Exceptional Items/PAT, Employee Exp/Sales; Cash Flow → Free Cash Flow. X-axis is
+  the years (2016 → 2025). Charts use the app's existing Chart.js (CDN); instances
+  are disposed on re-render / leaving the tab to avoid leaks. Each line is labelled
+  with the **actual company name** (not "Selected"), and **value data-labels** are
+  drawn on the points via `chartjs-plugin-datalabels` (loaded per-chart, never
+  globally registered, so Overview charts are unaffected). A value label is drawn
+  on **every** point (only genuine blanks/gaps are skipped), each with a white
+  halo for legibility. Placement is **per point**: at each year the higher line's
+  label sits above its point and the lower line's below, so the two series' labels
+  land on opposite sides of the gap and never clash (a single series always sits
+  above). The canvas is left to Chart.js to size (no forced CSS dimensions) so
+  text stays device-pixel sharp.
+- **Compare (chart mode)**: a **+ Compare** control (top-left, chart view only)
+  adds **one** peer company via the shared company search; its ratios are fetched
+  once (con-first) and cached, and overlaid on **every** section chart as a dashed
+  second line. Removing the peer returns to a single line. (Multi-peer is a later
+  extension.)
 
 Implementation in `legacyApp.js`: `renderForensicPage()` branches on
 `fp.activeTab` ('analysis' | 'ratios'); `loadForensicRatios()`, `parseRatios()`,

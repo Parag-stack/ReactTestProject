@@ -62,6 +62,10 @@ const FORENSIC_URL = '/api/Forensic_DetailedTables';
 // The tooltip payload is company-independent, so it's fetched once and cached.
 const RATIOS_URL = '/api/forensic';
 const RATIOS_TOOLTIP_URL = '/api/ForensicTooltip';
+// A director's roles across other companies (name click-through). POST
+// { Type:'DIR', DirName, companyId } -> { header, Data:[{Column1..Column5}] }
+// = Year / Company Name / Name / Reported Designation / Annu Rem (in Cr.).
+const BOD_DETAILS_URL = '/api/BoardOfDirectorDetails';
 // Company Note — the Forensic page header card is enriched from this.
 // POST + JSON body { CompanyID }. Response Data[0] carries the canonical
 // CompanyName, NSEcode/BSEcode and the exchange deep-links (NSELink/BSELink).
@@ -4345,7 +4349,7 @@ function renderCompanyMeta() {
 // renderers (renderForensicCardGrid / renderForensicTimeSeriesTable). con/std
 // are cached per mode so toggling is instant after the first fetch.
 
-const FP_TABS = ['Analysis', 'Ratios', 'Capital Structure', 'Directors and Auditor', 'Capital History', 'Dividend History', 'ESOP'];
+const FP_TABS = ['Analysis', 'Ratios', 'Directors and Auditor', 'Capital History', 'Dividend History', 'ESOP'];
 
 // Fetch the Forensic_DetailedTables data for a mode and render. Cache hit →
 // render instantly (no refetch). Guarded against stale responses by id+mode.
@@ -4423,7 +4427,7 @@ function renderForensicPage() {
   const activeTab = fp.activeTab || 'analysis';
 
   // Analysis (0) and Ratios (1) are live; the rest are disabled placeholders.
-  const TAB_KEYS = { 0: 'analysis', 1: 'ratios' };
+  const TAB_KEYS = { 0: 'analysis', 1: 'ratios', 2: 'directors', 3: 'capital', 4: 'dividend', 5: 'esop' };
   const tabsHtml = FP_TABS.map((name, i) => {
     const key = TAB_KEYS[i] || '';
     const enabled = key !== '';
@@ -4436,6 +4440,14 @@ function renderForensicPage() {
   let inner;
   if (activeTab === 'ratios') {
     inner = renderForensicRatios();
+  } else if (activeTab === 'directors') {
+    inner = renderForensicDirectors();
+  } else if (activeTab === 'capital') {
+    inner = renderForensicCapital();
+  } else if (activeTab === 'dividend') {
+    inner = renderForensicDividend();
+  } else if (activeTab === 'esop') {
+    inner = renderForensicEsop();
   } else {
     const bs = fp.buttonStatus || { con: true, std: true };
     const modesHtml = '<div class="fp-modes" role="tablist" aria-label="Statement type">'
@@ -4527,6 +4539,7 @@ function wireForensicPage() {
   const host = document.getElementById('forensicPage');
   if (!host) return;
   const fp = state.company.fp;
+  destroyEsopChart();   // dispose any live ESOP chart; re-created below if on that tab
   // Forensic sub-tab switch (Analysis ⇄ Ratios). Ratios is lazy-loaded/cached.
   host.querySelectorAll('.fp-tab[data-fptabkey]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -4536,14 +4549,45 @@ function wireForensicPage() {
       fp.activeTab = key;
       renderForensicPage();
       if (key === 'ratios') loadForensicRatios();
+      else if (key === 'directors') { loadForensicDirectors(); loadForensicAuditors(); }
+      else if (key === 'capital') loadForensicCapital();
+      else if (key === 'dividend') loadForensicDividend();
+      else if (key === 'esop') loadForensicEsop();
     });
   });
-  // Ratios tab: tooltip popovers + retry.
+  // Ratios tab: view toggle + compare + tooltip popovers + charts + retry.
   if (fp && fp.activeTab === 'ratios') {
-    wireRatioTooltips(host);
+    wireRatioCompare(host);
+    if (fp.ratios.view === 'chart') { wireRatioCharts(); }
+    else { destroyRatioCharts(); wireRatioTooltips(host); }
     const rr = host.querySelector('[data-fpratioretry]');
     if (rr) rr.onclick = () => { fp.ratios.data = null; fp.ratios.error = null; loadForensicRatios(); };
     return;   // the Analysis-only wiring below has nothing to bind on this tab
+  }
+  destroyRatioCharts();   // left the ratios tab → dispose any live charts
+  // Directors and Auditor tab.
+  if (fp && fp.activeTab === 'directors') {
+    wireForensicDirectors(host);
+    return;
+  }
+  // Capital History tab (retry only).
+  if (fp && fp.activeTab === 'capital') {
+    const cr = host.querySelector('[data-chretry]');
+    if (cr) cr.onclick = () => { fp.capital.data = null; fp.capital.error = null; loadForensicCapital(); };
+    return;
+  }
+  // Dividend History tab (retry only).
+  if (fp && fp.activeTab === 'dividend') {
+    const dr = host.querySelector('[data-dhretry]');
+    if (dr) dr.onclick = () => { fp.dividend.data = null; fp.dividend.error = null; loadForensicDividend(); };
+    return;
+  }
+  // ESOP tab (dilution chart + retry).
+  if (fp && fp.activeTab === 'esop') {
+    wireEsopChart();
+    const er = host.querySelector('[data-esopretry]');
+    if (er) er.onclick = () => { fp.esop.data = null; fp.esop.error = null; loadForensicEsop(); };
+    return;
   }
   // Consolidated / Standalone toggle.
   host.querySelectorAll('.fp-mode[data-fpmode]').forEach(btn => {
@@ -4602,9 +4646,18 @@ function startForensicSinglePage() {
     // company id so the same peer is fetched only once across all tables.
     compare: freshCompareState(), peerCache: {},
     // Forensic sub-tab: 'analysis' (default) or 'ratios'. ratios: lazy-loaded,
-    // cached per company (con-first, standalone fallback).
+    // cached per company (con-first, standalone fallback). view: 'table'|'chart';
+    // compare: one optional peer overlaid on every section chart.
     activeTab: 'analysis',
-    ratios: { data: null, loading: false, error: null, mode: null } };
+    ratios: { data: null, loading: false, error: null, mode: null, view: 'table', _charts: [],
+      compare: { peer: null, data: null, loading: false, error: null,
+        search: { open: false, query: '', results: [], loading: false, error: null, abort: null, timer: null, _view: [], highlighted: -1 } } },
+    // Directors and Auditor tab — lazy-loaded, cached per company (no con/std).
+    directors: { data: null, loading: false, error: null },
+    auditors: { data: null, loading: false, error: null },
+    capital: { data: null, loading: false, error: null },
+    dividend: { data: null, loading: false, error: null },
+    esop: { data: null, loading: false, error: null, _chart: null } };
   const host = document.getElementById('forensicPage');
   if (host) host.hidden = false;
   loadForensicSinglePage('con');
@@ -4694,6 +4747,32 @@ function ratiosHasRows(json) {
     String(r.column_1 || '').trim() && RATIOS_VAL_COLS.some(c => String(r[c] || '').trim()));
 }
 
+// Fetch + parse a company's ratios: Consolidated-first, Standalone fallback.
+async function fetchRatiosParsed(cid) {
+  const call = async dataFor => {
+    const res = await fetch(RATIOS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ Type: 'ratios', CompanyID: '', childType: '', dataFor, companyID: String(cid || '') }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (!json || json.status !== 1) throw new Error((json && json.msg) || 'API failure');
+    return json;
+  };
+  try {
+    let json = await call('con');
+    let mode = 'con';
+    const bs = json.button_status || {};
+    if ((bs.con === false || !ratiosHasRows(json)) && bs.std !== false) {
+      try { const s = await call('std'); if (ratiosHasRows(s)) { json = s; mode = 'std'; } } catch (e) { /* keep con */ }
+    }
+    return { parsed: parseRatios(json), mode };
+  } catch (e1) {
+    const s = await call('std');   // consolidated failed outright → standalone
+    return { parsed: parseRatios(s), mode: 'std' };
+  }
+}
+
 async function loadForensicRatios() {
   const fp = state.company.fp;
   if (!fp) return;
@@ -4705,64 +4784,982 @@ async function loadForensicRatios() {
   loadRatiosTooltips().then(() => {
     if (state.company.fp === fp && fp.activeTab === 'ratios' && fp.ratios.data) renderForensicPage();
   });
-
-  const cid = resolveCompanyId(state.company.data);
-  const call = async dataFor => {
-    const res = await fetch(RATIOS_URL, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ Type: 'ratios', CompanyID: '', childType: '', dataFor, companyID: String(cid || '') }),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const json = await res.json();
-    if (!json || json.status !== 1) throw new Error((json && json.msg) || 'API failure');
-    return json;
-  };
-
   try {
-    let json = await call('con');
-    let mode = 'con';
-    const bs = json.button_status || {};
-    // Consolidated unavailable → fall back to Standalone (priority still "con").
-    if ((bs.con === false || !ratiosHasRows(json)) && bs.std !== false) {
-      try { const s = await call('std'); if (ratiosHasRows(s)) { json = s; mode = 'std'; } } catch (e) { /* keep con */ }
-    }
+    const { parsed, mode } = await fetchRatiosParsed(resolveCompanyId(state.company.data));
     if (state.company.fp !== fp) return;
-    r.data = parseRatios(json); r.mode = mode; r.loading = false; r.error = null;
-  } catch (e1) {
-    // Consolidated request failed outright → try Standalone once.
-    try {
-      const s = await call('std');
-      if (state.company.fp !== fp) return;
-      r.data = parseRatios(s); r.mode = 'std'; r.loading = false; r.error = null;
-    } catch (e2) {
-      if (state.company.fp !== fp) return;
-      r.loading = false; r.error = (e1 && e1.message) || 'Failed to load ratios';
-    }
+    r.data = parsed; r.mode = mode; r.loading = false; r.error = null;
+  } catch (e) {
+    if (state.company.fp !== fp) return;
+    r.loading = false; r.error = (e && e.message) || 'Failed to load ratios';
   }
   if (state.company.fp === fp && fp.activeTab === 'ratios') renderForensicPage();
 }
 
+// Load the single compare peer's ratios and overlay them on every section chart.
+async function loadRatiosPeer(co) {
+  const fp = state.company.fp;
+  const cmp = fp.ratios.compare;
+  const cid = resolveCompanyId(co);
+  cmp.peer = { name: co.CompanyName || 'Peer', co, id: String(cid || '') };
+  cmp.data = null; cmp.loading = true; cmp.error = null;
+  renderForensicPage();
+  try {
+    const { parsed } = await fetchRatiosParsed(cid);
+    if (state.company.fp !== fp || !cmp.peer || cmp.peer.id !== String(cid || '')) return;
+    cmp.data = parsed; cmp.loading = false; cmp.error = null;
+  } catch (e) {
+    if (state.company.fp !== fp || !cmp.peer) return;
+    cmp.loading = false; cmp.error = 'Failed to load peer';
+  }
+  if (state.company.fp === fp) renderForensicPage();
+}
+
 function renderForensicRatios() {
-  const r = state.company.fp.ratios;
+  const fp = state.company.fp;
+  const r = fp.ratios;
+  const view = r.view || 'table';
   let body;
   if (r.loading || (r.data === null && !r.error)) {
     body = '<div class="fr-loading"><div class="fr-loading-text">Loading ratios…</div></div>';
   } else if (r.error) {
     body = '<div class="fr-error"><p>' + escapeHtml(r.error) + '</p><button type="button" class="fp-retry" data-fpratioretry>Retry</button></div>';
   } else {
-    body = renderRatioCards(r.data);
+    body = (view === 'chart') ? renderRatioChartCards(r.data) : renderRatioCards(r.data);
   }
-  // "Consolidated Priority" label sits at the top-RIGHT; one card per section below.
+  const toggle = '<div class="fr-view-toggle" role="tablist" aria-label="View">'
+    + '<button type="button" class="fr-vbtn' + (view === 'table' ? ' active' : '') + '" data-rview="table">Table</button>'
+    + '<button type="button" class="fr-vbtn' + (view === 'chart' ? ' active' : '') + '" data-rview="chart">Chart</button>'
+    + '</div>';
+  const compareCtl = (view === 'chart' && r.data && !r.error) ? ratioCompareControlHtml(fp) : '';
+  // Toggle (+ compare in chart mode) on the left; "Consolidated Priority" on the right.
   return '<div class="fp-singlepage fp-ratios">'
     + '<div class="fr-ratios-head">'
+    + '<div class="fr-ratios-head-left">' + toggle + compareCtl + '</div>'
     + '<span class="fr-ratios-mode" title="Consolidated figures are shown; Standalone is used only when Consolidated is unavailable.">Consolidated Priority</span>'
     + '</div>'
     + '<div class="fp-tables cv-forensic">' + body + '</div></div>';
 }
 
-// One card per section (I. Return Ratios, II. Survival Probability, …). Each card
-// has its section title on the left and a self-contained 10-year table
-// (2016 → 2025, latest column emphasised) with per-ratio "?" info tooltips.
+/* ---- Ratios line charts (Chart mode) ------------------------------------- */
+// Which metric(s) each section charts, per the product spec. A separate small
+// line chart is drawn per metric (each on its own scale).
+const RATIO_CHART_SPEC = [
+  { match: /return\s*ratios/i,          metrics: ['ROE (%)', 'ROCE (%)'] },
+  { match: /survival\s*probability/i,   metrics: ['Net Debt / Total Equity (x)'] },
+  { match: /balance\s*sheet\s*health/i, metrics: ['Asset Turnover (x)', 'Cash Conversion Cycle (Days)'] },
+  { match: /financial\s*ratio/i,        metrics: ['Dividend Payout Ratio (%)'] },
+  { match: /profit\s*&?\s*loss/i,       metrics: ['Interest Coverage (x)', 'Exceptional Items/PAT (x)', 'Employee Expenses/Sales (%)'] },
+  { match: /cash\s*flow/i,              metrics: ['Free Cash Flow'] },
+];
+
+function ratioMetricMap(parsed) {
+  const map = {};
+  parsed.rows.forEach(row => { if (row.type === 'metric') map[cmpNormMetric(row.label)] = row; });
+  return map;
+}
+function lookupRatioMetric(map, specLabel) {
+  const want = cmpNormMetric(specLabel);
+  if (map[want]) return map[want];
+  const k = Object.keys(map).find(key => key.startsWith(want));   // "free cash flow" → "free cash flow (rs)"
+  return k ? map[k] : null;
+}
+function ratioNums(vals) {
+  return vals.map(v => { const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : null; });
+}
+
+function renderRatioChartCards(parsed) {
+  const fp = state.company.fp;
+  const cmp = fp.ratios.compare;
+  const years = parsed.years;
+  const groups = groupRatiosSections(parsed);
+  const mainMap = ratioMetricMap(parsed);
+  const peerMap = (cmp.peer && cmp.data) ? ratioMetricMap(cmp.data) : null;
+  const charts = [];   // descriptors instantiated after insertion by wireRatioCharts()
+
+  const cards = groups.map(g => {
+    const spec = RATIO_CHART_SPEC.find(s => s.match.test(g.title));
+    if (!spec) return '';
+    const minis = spec.metrics.map(specLabel => {
+      const row = lookupRatioMetric(mainMap, specLabel);
+      if (!row) return '';
+      const id = 'rchart-' + charts.length;
+      let peerValues = null, peerRaw = null;
+      if (peerMap) {
+        const prow = lookupRatioMetric(peerMap, specLabel);
+        peerValues = prow ? ratioNums(prow.vals) : years.map(() => null);
+        peerRaw = prow ? prow.vals.slice() : years.map(() => '');
+      }
+      charts.push({ id, years, values: ratioNums(row.vals), rawValues: row.vals.slice(),
+        peerValues, peerRawValues: peerRaw, peerName: cmp.peer ? cmp.peer.name : null });
+      return '<div class="fr-chart"><div class="fr-chart-title">' + escapeHtml(row.label) + '</div>'
+        + '<div class="fr-chart-canvas"><canvas id="' + id + '"></canvas></div></div>';
+    }).join('');
+    if (!minis) return '';
+    return '<section class="fr-ratio-card"><h3 class="fr-ratio-card-title">' + escapeHtml(g.title) + '</h3>'
+      + '<div class="fr-chart-grid">' + minis + '</div></section>';
+  }).join('');
+
+  fp.ratios._charts = charts;
+  return cards || '<div class="fr-error"><p>No chartable ratios available.</p></div>';
+}
+
+let ratioChartInstances = [];
+function destroyRatioCharts() {
+  ratioChartInstances.forEach(c => { try { c.destroy(); } catch (e) { /* detached */ } });
+  ratioChartInstances = [];
+}
+function wireRatioCharts() {
+  destroyRatioCharts();
+  const fp = state.company.fp;
+  const charts = (fp && fp.ratios && fp.ratios._charts) || [];
+  if (!charts.length) return;
+  if (typeof Chart === 'undefined') { setTimeout(wireRatioCharts, 100); return; }   // wait for Chart.js (defer)
+  const ACCENT = '#E8743B', PEER = '#0D9488';
+  const selectedName = (state.company.data && state.company.data.CompanyName) || 'Selected';
+  const hasDL = typeof ChartDataLabels !== 'undefined';
+  charts.forEach(desc => {
+    const cv = document.getElementById(desc.id);
+    if (!cv || typeof cv.getContext !== 'function') return;
+    const datasets = [{ label: selectedName, data: desc.values, borderColor: ACCENT, backgroundColor: ACCENT,
+      borderWidth: 1.8, pointRadius: 2.4, pointHoverRadius: 4, tension: 0.28, spanGaps: true }];
+    if (desc.peerValues) datasets.push({ label: desc.peerName || 'Peer', data: desc.peerValues, borderColor: PEER,
+      backgroundColor: PEER, borderWidth: 1.8, borderDash: [5, 4], pointRadius: 2.4, pointHoverRadius: 4, tension: 0.28, spanGaps: true });
+    ratioChartInstances.push(new Chart(cv.getContext('2d'), {
+      type: 'line',
+      data: { labels: desc.years, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 18, right: 8, left: 4, bottom: 14 } },
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: !!desc.peerValues, labels: { boxWidth: 10, font: { size: 10 }, usePointStyle: true, color: '#374151' } },
+          tooltip: { enabled: true },
+          // Value label on EVERY point (none hidden). Selected labels sit above
+          // the line, peer labels below, so the two series don't clash; a white
+          // halo keeps them legible where a line or the other label runs close.
+          datalabels: {
+            display: c => {
+              const raw = c.datasetIndex === 0 ? desc.rawValues : desc.peerRawValues;
+              const s = raw && raw[c.dataIndex];
+              return !(s == null || String(s).trim() === '');   // show all, except blank/"-" gaps
+            },
+            clamp: true, anchor: 'center',
+            // Per-point placement: at each year the higher line's label goes
+            // ABOVE its point and the lower line's BELOW, so they sit on opposite
+            // sides of the gap and never clash (single series → always above).
+            align: c => {
+              const ds = c.chart.data.datasets;
+              if (ds.length < 2) return 'top';
+              const mine = ds[c.datasetIndex].data[c.dataIndex];
+              const other = ds[c.datasetIndex === 0 ? 1 : 0].data[c.dataIndex];
+              if (other == null) return 'top';
+              if (mine === other) return c.datasetIndex === 0 ? 'top' : 'bottom';   // tie → split
+              return mine > other ? 'top' : 'bottom';
+            },
+            offset: 4, color: c => (c.datasetIndex === 0 ? '#B45309' : '#0F766E'),
+            font: { size: 9, weight: '700' },
+            textStrokeColor: 'rgba(255,255,255,0.92)', textStrokeWidth: 3,
+            formatter: (v, c) => {
+              const raw = c.datasetIndex === 0 ? desc.rawValues : desc.peerRawValues;
+              const s = raw && raw[c.dataIndex];
+              return (s == null || String(s).trim() === '') ? '' : String(s);
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 0, autoSkip: true } },
+          y: { grid: { color: 'rgba(15,23,42,0.06)' }, ticks: { font: { size: 10 } }, beginAtZero: false, grace: '16%' },
+        },
+      },
+      plugins: hasDL ? [ChartDataLabels] : [],   // per-chart only — Overview charts unaffected
+    }));
+  });
+}
+
+/* ---- Ratios compare (one peer, chart mode) ---- */
+function ratioCompareControlHtml(fp) {
+  const cmp = fp.ratios.compare;
+  if (cmp.peer) {
+    const status = cmp.loading ? ' · loading…' : (cmp.error ? ' · failed' : '');
+    return '<div class="fr-cmp-wrap"><span class="fr-cmp-chip"><span class="fr-cmp-dot"></span>'
+      + escapeHtml(cmp.peer.name) + escapeHtml(status)
+      + '<button type="button" class="fr-cmp-x" data-rpeerremove aria-label="Remove peer">&times;</button></span></div>';
+  }
+  const plus = '<svg class="ff-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+  return '<div class="fr-cmp-wrap"><div class="ff-search" data-rsearch>' + ratioSearchInnerHtml(fp) + '</div>'
+    + '<button type="button" class="fp-cmp-btn" data-rcompare>' + plus + '<span>Compare</span></button></div>';
+}
+function ratioSearchInnerHtml(fp) {
+  const s = fp.ratios.compare.search;
+  if (!s.open) return '';
+  return '<input type="text" class="ff-search-in" data-rsearch-in placeholder="Search a company to compare…" value="' + escapeHtml(s.query) + '" autocomplete="off" spellcheck="false">'
+    + '<div class="ff-menu" data-rmenu>' + ratioMenuHtml(fp) + '</div>';
+}
+function ratioMenuHtml(fp) {
+  const s = fp.ratios.compare.search;
+  s._view = [];
+  if (s.query.trim().length < 2) return '<div class="ff-menu-note">Type at least 2 characters…</div>';
+  if (s.loading) return '<div class="ff-menu-note"><span class="gs-spinner"></span> Searching…</div>';
+  if (s.error) return '<div class="ff-menu-note">' + escapeHtml(s.error) + '</div>';
+  const baseId = resolveCompanyId(state.company.data);
+  const list = (s.results || []).filter(c => { const id = resolveCompanyId(c); return id && String(id) !== String(baseId); }).slice(0, 8);
+  s._view = list;
+  if (s.highlighted >= list.length) s.highlighted = list.length - 1;
+  if (!list.length) return '<div class="ff-menu-note">No other companies match</div>';
+  return list.map((c, i) => '<button type="button" class="ff-menu-item' + (i === s.highlighted ? ' is-hl' : '') + '" data-rpick="' + i + '">'
+    + escapeHtml(c.CompanyName || '') + '</button>').join('');
+}
+function wireRatioCompare(host) {
+  const fp = state.company.fp;
+  // Table / Chart toggle.
+  host.querySelectorAll('[data-rview]').forEach(btn => btn.addEventListener('click', () => {
+    const v = btn.getAttribute('data-rview');
+    if (fp.ratios.view === v) return;
+    fp.ratios.view = v;
+    renderForensicPage();
+  }));
+  // Remove peer.
+  const rm = host.querySelector('[data-rpeerremove]');
+  if (rm) rm.addEventListener('click', () => {
+    fp.ratios.compare.peer = null; fp.ratios.compare.data = null; fp.ratios.compare.error = null;
+    renderForensicPage();
+  });
+  // +Compare open/close.
+  const cbtn = host.querySelector('[data-rcompare]');
+  if (cbtn) cbtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const s = fp.ratios.compare.search;
+    s.open = !s.open; s.query = ''; s.results = []; s.error = null; s.loading = false; s.highlighted = -1;
+    const sh = host.querySelector('[data-rsearch]');
+    if (sh) sh.innerHTML = ratioSearchInnerHtml(fp);
+    wireRatioSearch(host, fp);
+  });
+  wireRatioSearch(host, fp);
+}
+function wireRatioSearch(host, fp) {
+  const input = host.querySelector('[data-rsearch-in]');
+  if (input) {
+    input.addEventListener('input', () => {
+      const s = fp.ratios.compare.search;
+      s.query = input.value; s.highlighted = -1;
+      clearTimeout(s.timer);
+      const q = input.value.trim();
+      if (q.length < 2) { s.results = []; s.loading = false; s.error = null; updateRatioMenu(host, fp); return; }
+      s.loading = true; s.error = null; updateRatioMenu(host, fp);
+      s.timer = setTimeout(() => ratioFetchPeers(q, host, fp), 300);
+    });
+    input.addEventListener('keydown', e => {
+      const s = fp.ratios.compare.search;
+      const n = (s._view || []).length;
+      if (e.key === 'ArrowDown') { e.preventDefault(); if (!n) return; s.highlighted = (s.highlighted + 1) % n; ratioHighlight(host, s); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (!n) return; s.highlighted = (s.highlighted - 1 + n) % n; ratioHighlight(host, s); }
+      else if (e.key === 'Enter') { e.preventDefault(); const i = s.highlighted >= 0 ? s.highlighted : 0; const co = s._view && s._view[i]; if (co) ratioPickPeer(co, fp); }
+      else if (e.key === 'Escape') { e.preventDefault(); s.open = false; const sh = host.querySelector('[data-rsearch]'); if (sh) sh.innerHTML = ''; }
+    });
+    input.focus();
+    const v = input.value; input.value = ''; input.value = v;
+  }
+  ratioWirePicks(host, fp);
+}
+function ratioHighlight(host, s) {
+  const items = host.querySelectorAll('[data-rsearch] .ff-menu-item');
+  items.forEach((el, i) => el.classList.toggle('is-hl', i === s.highlighted));
+  const cur = items[s.highlighted];
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+}
+function ratioWirePicks(host, fp) {
+  host.querySelectorAll('[data-rpick]').forEach(b => {
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      const co = fp.ratios.compare.search._view && fp.ratios.compare.search._view[parseInt(b.getAttribute('data-rpick'), 10)];
+      if (co) ratioPickPeer(co, fp);
+    });
+    b.addEventListener('mouseenter', () => {
+      const idx = parseInt(b.getAttribute('data-rpick'), 10);
+      if (!Number.isNaN(idx)) { fp.ratios.compare.search.highlighted = idx; ratioHighlight(host, fp.ratios.compare.search); }
+    });
+  });
+}
+function updateRatioMenu(host, fp) {
+  const menu = host.querySelector('[data-rmenu]');
+  if (menu) menu.innerHTML = ratioMenuHtml(fp);
+  ratioWirePicks(host, fp);
+}
+async function ratioFetchPeers(q, host, fp) {
+  const s = fp.ratios.compare.search;
+  if (s.abort) s.abort.abort();
+  s.abort = new AbortController();
+  const signal = s.abort.signal;
+  try {
+    const res = await fetch(SEARCH_API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ Search: q, Type: '', sector_id: [], industry_id: [], company_id: [] }), signal,
+    });
+    if (signal.aborted) return;
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (signal.aborted) return;
+    s.results = Array.isArray(json) ? json : []; s.loading = false;
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    s.error = 'Search failed'; s.loading = false; s.results = [];
+  }
+  if (state.company.fp !== fp || !s.open) return;
+  updateRatioMenu(host, fp);
+}
+function ratioPickPeer(co, fp) {
+  const s = fp.ratios.compare.search;
+  s.open = false; s.query = ''; s.results = []; s._view = []; s.highlighted = -1;
+  loadRatiosPeer(co);
+}
+
+/* ---- Forensic > Directors and Auditor tab -------------------------------
+   Innovative card view of the latest-year board & key management from the
+   Director API (POST /api/forensic { Type:'DIR', companyID, dataFor:'con' } —
+   there's no con/std split here). Each card shows the person, their role, and
+   annual remuneration with a relative bar (top-paid highlighted). Clicking a
+   name opens a modal ready for the cross-company associations API (to come).
+   The Auditor table is added once its API is provided. */
+
+const DIR_ACCENTS = ['#4F46E5', '#0D9488', '#B45309', '#DB2777', '#0369A1', '#65A30D', '#9333EA', '#DC2626'];
+
+function parseDirectors(json) {
+  const d = (json && json.Data && json.Data[0]) || {};
+  const rows = (Array.isArray(d.TableData) ? d.TableData : []).map(r => ({
+    year: String(r.column_1 == null ? '' : r.column_1).trim(),
+    name: String(r.column_2 == null ? '' : r.column_2).trim(),
+    designation: String(r.column_3 == null ? '' : r.column_3).trim(),
+    rem: String(r.column_4 == null ? '' : r.column_4).trim(),
+  })).filter(r => r.name);
+  return { rows };
+}
+
+async function loadForensicDirectors() {
+  const fp = state.company.fp;
+  if (!fp) return;
+  const dir = fp.directors;
+  if (dir.data || dir.loading) return;            // cached for this company, or in flight
+  dir.loading = true; dir.error = null;
+  if (fp.activeTab === 'directors') renderForensicPage();
+  const cid = resolveCompanyId(state.company.data);
+  try {
+    const res = await fetch(RATIOS_URL, {         // same /api/forensic endpoint
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ Type: 'DIR', CompanyID: '', childType: '', dataFor: 'con', companyID: String(cid || '') }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (!json || json.status !== 1) throw new Error((json && json.msg) || 'API failure');
+    if (state.company.fp !== fp) return;
+    dir.data = parseDirectors(json); dir.loading = false; dir.error = null;
+  } catch (e) {
+    if (state.company.fp !== fp) return;
+    dir.loading = false; dir.error = (e && e.message) || 'Failed to load directors';
+  }
+  if (state.company.fp === fp && fp.activeTab === 'directors') renderForensicPage();
+}
+
+function renderForensicDirectors() {
+  const fp = state.company.fp;
+  const dir = fp.directors;
+  let dirBody;
+  if (dir.loading || (dir.data === null && !dir.error)) {
+    dirBody = '<div class="fr-loading"><div class="fr-loading-text">Loading directors…</div></div>';
+  } else if (dir.error) {
+    dirBody = '<div class="fr-error"><p>' + escapeHtml(dir.error) + '</p><button type="button" class="fp-retry" data-dirretry>Retry</button></div>';
+  } else {
+    dirBody = renderDirectorCards(dir.data);
+  }
+  return '<div class="fp-singlepage fp-directors"><div class="fp-tables cv-forensic">'
+    + dirBody + renderAuditorSection(fp.auditors) + '</div></div>';
+}
+
+function renderAuditorSection(aud) {
+  let body;
+  if (aud.loading || (aud.data === null && !aud.error)) {
+    body = '<div class="fr-loading"><div class="fr-loading-text">Loading auditors…</div></div>';
+  } else if (aud.error) {
+    body = '<div class="fr-error"><p>' + escapeHtml(aud.error) + '</p><button type="button" class="fp-retry" data-audretry>Retry</button></div>';
+  } else {
+    body = renderAuditorCards(aud.data);
+  }
+  const firms = (aud.data && aud.data.firms) || null;
+  const sub = firms ? '<span class="dir-head-sub">' + firms.length + ' ' + (firms.length === 1 ? 'firm' : 'firms') + ' · click a name for other companies audited</span>' : '';
+  return '<div class="aud-section"><div class="dir-head" style="margin-top:26px"><h3 class="dir-head-title">Auditors</h3>' + sub + '</div>' + body + '</div>';
+}
+
+function dirInitials(name) {
+  const parts = String(name || '').split(/\s+/).filter(Boolean);
+  return ((parts[0] || '')[0] || '' ) .concat((parts[parts.length - 1] || '')[0] || '').toUpperCase() || '?';
+}
+
+function renderDirectorCards(data) {
+  const rows0 = data.rows || [];
+  if (!rows0.length) return '<div class="fr-error"><p>No director data available.</p></div>';
+  const year = rows0[0].year || '';
+  const remOf = r => { const n = parseFloat(String(r.rem).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : 0; };
+  // Sort by remuneration high → low; keep original order for equal pay (stable).
+  const rows = rows0.map((r, idx) => ({ year: r.year, name: r.name, designation: r.designation, rem: r.rem, _rem: remOf(r), _idx: idx }))
+    .sort((a, b) => (b._rem - a._rem) || (a._idx - b._idx));
+  const maxRem = rows.length ? rows[0]._rem : 0;
+
+  // First row features the top 3, extended so an equal-pay tie at the cutoff is
+  // not split across rows (the row simply holds more than 3).
+  let firstCount = Math.min(3, rows.length);
+  while (firstCount < rows.length && rows[firstCount]._rem === rows[firstCount - 1]._rem) firstCount++;
+
+  const card = (r, i) => {
+    const pct = maxRem > 0 ? Math.max(2, Math.round((r._rem / maxRem) * 100)) : 0;
+    const isTop = maxRem > 0 && r._rem === maxRem;   // all who share the top pay
+    return '<div class="dir-card' + (isTop ? ' dir-top' : '') + '">'
+      + '<div class="dir-card-top">'
+      + '<span class="dir-avatar" style="background:' + DIR_ACCENTS[i % DIR_ACCENTS.length] + '">' + escapeHtml(dirInitials(r.name)) + '</span>'
+      + '<div class="dir-id">'
+      + '<button type="button" class="dir-name" data-dir-name="' + escapeHtml(r.name) + '" title="View cross-company associations">' + escapeHtml(r.name) + '</button>'
+      + '<div class="dir-role">' + escapeHtml(r.designation || '—') + '</div>'
+      + '</div>'
+      + (isTop ? '<span class="dir-top-tag">Top paid</span>' : '')
+      + '</div>'
+      + '<div class="dir-rem"><span class="dir-rem-val">₹' + escapeHtml(r.rem || '0') + ' Cr</span><span class="dir-rem-yr">FY' + escapeHtml(r.year || year) + '</span></div>'
+      + '<div class="dir-rem-bar"><span style="width:' + pct + '%"></span></div>'
+      + '</div>';
+  };
+
+  const topCards = rows.slice(0, firstCount).map((r, i) => card(r, i)).join('');
+  const restCards = rows.slice(firstCount).map((r, i) => card(r, i + firstCount)).join('');
+
+  return '<div class="dir-head"><h3 class="dir-head-title">Board &amp; Key Management</h3>'
+    + '<span class="dir-head-sub">' + rows.length + ' ' + (rows.length === 1 ? 'person' : 'people') + (year ? ' · FY' + escapeHtml(year) : '') + '</span></div>'
+    + '<div class="dir-top-row" style="grid-template-columns:repeat(' + firstCount + ',minmax(0,1fr))">' + topCards + '</div>'
+    + (restCards ? '<div class="dir-grid">' + restCards + '</div>' : '')
+    + '<div class="dir-note">Click any name to see their roles at other companies.</div>';
+}
+
+// ---- Auditors (grouped by firm) ----
+async function loadForensicAuditors() {
+  const fp = state.company.fp;
+  if (!fp) return;
+  const aud = fp.auditors;
+  if (aud.data || aud.loading) return;
+  aud.loading = true; aud.error = null;
+  if (fp.activeTab === 'directors') renderForensicPage();
+  const cid = resolveCompanyId(state.company.data);
+  try {
+    const res = await fetch(RATIOS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ Type: 'AH', CompanyID: '', childType: '', dataFor: 'con', companyID: String(cid || '') }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (!json || json.status !== 1) throw new Error((json && json.msg) || 'API failure');
+    if (state.company.fp !== fp) return;
+    aud.data = parseAuditors(json); aud.loading = false; aud.error = null;
+  } catch (e) {
+    if (state.company.fp !== fp) return;
+    aud.loading = false; aud.error = (e && e.message) || 'Failed to load auditors';
+  }
+  if (state.company.fp === fp && fp.activeTab === 'directors') renderForensicPage();
+}
+
+// Group the year→firm rows by audit firm; each firm keeps the years it audited.
+function parseAuditors(json) {
+  const d = (json && json.Data && json.Data[0]) || {};
+  const rows = (Array.isArray(d.TableData) ? d.TableData : []).map(r => ({
+    year: String(r.column_1 == null ? '' : r.column_1).trim(),
+    name: String(r.column_2 == null ? '' : r.column_2).trim(),
+  })).filter(r => r.name);
+  const byFirm = {};
+  rows.forEach(r => { (byFirm[r.name] = byFirm[r.name] || []).push(r.year); });
+  const firms = Object.keys(byFirm).map(name => {
+    const years = byFirm[name].filter(Boolean).map(y => parseInt(y, 10) || 0).sort((a, b) => b - a);
+    return { name, years, latest: years[0] || 0, earliest: years[years.length - 1] || 0 };
+  });
+  firms.sort((a, b) => (b.latest - a.latest) || a.name.localeCompare(b.name));
+  return { firms };
+}
+
+function renderAuditorCards(data) {
+  const firms = (data && data.firms) || [];
+  if (!firms.length) return '<div class="fr-error"><p>No auditor data available.</p></div>';
+  return '<div class="aud-list">' + firms.map((f, i) => {
+    const isCurrent = i === 0 && f.latest > 0;   // most recent firm = current auditor
+    const chips = f.years.map(y => '<span class="aud-yr">' + y + '</span>').join('');
+    const yrCount = f.years.length + ' yr' + (f.years.length === 1 ? '' : 's');
+    return '<div class="aud-row">'
+      + '<div class="aud-firm">'
+      + '<button type="button" class="dir-name aud-name" data-aud-name="' + escapeHtml(f.name) + '" title="Companies this firm has audited">' + escapeHtml(f.name) + '</button>'
+      + (isCurrent ? '<span class="aud-current">Current</span>' : '')
+      + '<span class="aud-tenure">' + yrCount + '</span>'
+      + '</div>'
+      + '<div class="aud-yrs">' + chips + '</div>'
+      + '</div>';
+  }).join('') + '</div>';
+}
+
+function wireForensicDirectors(host) {
+  const fp = state.company.fp;
+  host.querySelectorAll('[data-dir-name]').forEach(btn =>
+    btn.addEventListener('click', () => openAssocModal(btn.getAttribute('data-dir-name'), 'DIR')));
+  host.querySelectorAll('[data-aud-name]').forEach(btn =>
+    btn.addEventListener('click', () => openAssocModal(btn.getAttribute('data-aud-name'), 'AH')));
+  const rr = host.querySelector('[data-dirretry]');
+  if (rr) rr.onclick = () => { fp.directors.data = null; fp.directors.error = null; loadForensicDirectors(); };
+  const ar = host.querySelector('[data-audretry]');
+  if (ar) ar.onclick = () => { fp.auditors.data = null; fp.auditors.error = null; loadForensicAuditors(); };
+}
+
+// Modal for a director's cross-company associations, grouped by company.
+let dirModalName = null;   // currently-open director (guards against stale fetches)
+
+function ensureDirModal() {
+  let m = document.getElementById('dirModal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'dirModal';
+    m.className = 'dir-modal-overlay';
+    document.body.appendChild(m);
+    m.addEventListener('click', e => { if (e.target === m) closeDirectorModal(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDirectorModal(); });
+  }
+  return m;
+}
+
+function openAssocModal(name, kind) {
+  dirModalName = name;
+  const m = ensureDirModal();
+  m.style.display = 'flex';
+  renderDirModal(name, { loading: true });
+  loadAssociations(name, kind || 'DIR');
+}
+
+function closeDirectorModal() {
+  const m = document.getElementById('dirModal');
+  if (m) m.style.display = 'none';
+  dirModalName = null;
+}
+
+async function loadAssociations(name, kind) {
+  const cid = resolveCompanyId(state.company.data);
+  try {
+    const res = await fetch(BOD_DETAILS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ Type: kind, DirName: name, companyId: String(cid || '') }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (dirModalName !== name) return;                       // a different modal opened meanwhile
+    if (!json || json.status !== 1) throw new Error((json && json.msg) || 'No data');
+    renderDirModal(name, { data: parseAssociations(json, kind) });
+  } catch (e) {
+    if (dirModalName !== name) return;
+    renderDirModal(name, { error: (e && e.message) || 'Failed to load associations' });
+  }
+}
+
+// Group the flat association rows by company. Directors carry designation + pay
+// per year; auditors carry only the years (kind === 'AH').
+function parseAssociations(json, kind) {
+  const data = Array.isArray(json.Data) ? json.Data : [];
+  const byCompany = {};
+  data.forEach(r => {
+    const company = String(r.Column2 == null ? '' : r.Column2).trim();
+    if (!company) return;
+    (byCompany[company] = byCompany[company] || []).push({
+      year: String(r.Column1 == null ? '' : r.Column1).trim(),
+      designation: kind === 'DIR' ? String(r.Column4 == null ? '' : r.Column4).trim() : '',
+      rem: kind === 'DIR' ? String(r.Column5 == null ? '' : r.Column5).trim() : '',
+    });
+  });
+  const groups = Object.keys(byCompany).map(company => {
+    const recs = byCompany[company].sort((a, b) => (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0));
+    return { company, recs, latestYear: recs.length ? (parseInt(recs[0].year, 10) || 0) : 0 };
+  });
+  groups.sort((a, b) => (b.latestYear - a.latestYear) || a.company.localeCompare(b.company));
+  return { groups, count: groups.length, kind: kind };
+}
+
+function renderDirModal(name, st) {
+  const m = document.getElementById('dirModal');
+  if (!m) return;
+  let body;
+  if (st.loading) body = '<div class="dir-assoc-loading"><span class="gs-spinner"></span> Loading associations…</div>';
+  else if (st.error) body = '<div class="dir-assoc-empty">' + escapeHtml(st.error) + '</div>';
+  else if (!st.data || !st.data.groups.length) body = '<div class="dir-assoc-empty">No other-company associations found for <strong>' + escapeHtml(name) + '</strong>.</div>';
+  else body = renderAssociationGroups(st.data);
+  const isAud = st.data && st.data.kind === 'AH';
+  const sub = st.data ? '<span class="dir-modal-sub">' + (isAud ? 'Audited ' : 'Associated with ') + st.data.count + ' other ' + (st.data.count === 1 ? 'company' : 'companies') + '</span>' : '';
+  m.innerHTML = '<div class="dir-modal" role="dialog" aria-modal="true" aria-label="Associations for ' + escapeHtml(name) + '">'
+    + '<div class="dir-modal-head"><div><h3>' + escapeHtml(name) + '</h3>' + sub + '</div>'
+    + '<button type="button" class="dir-modal-x" data-dirclose aria-label="Close">&times;</button></div>'
+    + '<div class="dir-modal-body">' + body + '</div></div>';
+  const x = m.querySelector('[data-dirclose]');
+  if (x) x.onclick = closeDirectorModal;
+}
+
+function renderAssociationGroups(data) {
+  const isAud = data.kind === 'AH';
+  return data.groups.map(g => {
+    const yrs = g.recs.map(r => r.year).filter(Boolean);
+    const range = yrs.length ? (yrs.length > 1 ? yrs[yrs.length - 1] + '–' + yrs[0] : yrs[0]) : '';
+    let inner;
+    if (isAud) {
+      inner = '<div class="aud-yrs">' + g.recs.map(r => '<span class="aud-yr">' + escapeHtml(r.year || '') + '</span>').join('') + '</div>';
+    } else {
+      inner = '<div class="dir-assoc-rows">' + g.recs.map(r =>
+        '<div class="dir-assoc-row"><span class="dir-assoc-year">' + escapeHtml(r.year || '') + '</span>'
+        + '<span class="dir-assoc-desg">' + escapeHtml(r.designation || '—') + '</span>'
+        + '<span class="dir-assoc-rem">₹' + escapeHtml(r.rem || '0') + ' Cr</span></div>').join('') + '</div>';
+    }
+    return '<div class="dir-assoc-group">'
+      + '<div class="dir-assoc-co"><span class="dir-assoc-co-name">' + escapeHtml(g.company) + '</span>'
+      + (range ? '<span class="dir-assoc-co-yrs">' + escapeHtml(range) + '</span>' : '') + '</div>'
+      + inner + '</div>';
+  }).join('');
+}
+
+/* ---- Forensic > Capital History tab -------------------------------------
+   A vertical timeline of capital events (latest first) from the CH API
+   (POST /api/forensic { Type:'CH', companyID, dataFor:'con' } — no con/std).
+   Each event: date, colour-coded reason badge, shares added (+/−), and fund
+   raised. A small summary strip up top gives the headline figures. */
+
+const CH_MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+function chDateKey(s) {
+  const m = String(s || '').match(/(\d{1,2})-([A-Za-z]{3,})-(\d{4})/);
+  if (!m) return 0;
+  const mo = CH_MONTHS[m[2].slice(0, 3).toLowerCase()];
+  return parseInt(m[3], 10) * 10000 + (mo == null ? 0 : mo) * 100 + parseInt(m[1], 10);
+}
+function chNum(v) { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : 0; }
+function chYear(s) { const m = String(s || '').match(/(\d{4})/); return m ? m[1] : ''; }
+// Colour-code the reason badge + timeline dot by event type.
+function chReasonStyle(reason) {
+  const r = String(reason).toLowerCase();
+  if (/public issue|rights|allotment|conversion|preferential/.test(r)) return { bg: '#FDF0E3', fg: '#B45309', dot: '#E8743B' };
+  if (/bonus/.test(r)) return { bg: '#EDE9FE', fg: '#6D28D9', dot: '#7C3AED' };
+  if (/offer for sale/.test(r)) return { bg: '#FEF3C7', fg: '#92400E', dot: '#D97706' };
+  if (/scheme|arrangement|amalgam|merger|memorandum/.test(r)) return { bg: '#E0F2FE', fg: '#075985', dot: '#0284C7' };
+  return { bg: '#F1F3F5', fg: '#475569', dot: '#94A3B8' };
+}
+
+function parseCapital(json) {
+  const d = (json && json.Data && json.Data[0]) || {};
+  const rows = (Array.isArray(d.TableData) ? d.TableData : []).map(r => ({
+    date: String(r.column_1 == null ? '' : r.column_1).trim(),
+    sharesSubs: String(r.column_2 == null ? '' : r.column_2).trim(),
+    sharesAdded: String(r.column_3 == null ? '' : r.column_3).trim(),
+    faceValue: String(r.column_4 == null ? '' : r.column_4).trim(),
+    sharePrice: String(r.column_5 == null ? '' : r.column_5).trim(),
+    premium: String(r.column_6 == null ? '' : r.column_6).trim(),
+    fundRaised: String(r.column_7 == null ? '' : r.column_7).trim(),
+    reason: String(r.column_8 == null ? '' : r.column_8).trim(),
+  })).filter(r => r.date || r.reason);
+  rows.sort((a, b) => chDateKey(b.date) - chDateKey(a.date));   // latest first
+  return { rows };
+}
+
+async function loadForensicCapital() {
+  const fp = state.company.fp;
+  if (!fp) return;
+  const cap = fp.capital;
+  if (cap.data || cap.loading) return;
+  cap.loading = true; cap.error = null;
+  if (fp.activeTab === 'capital') renderForensicPage();
+  const cid = resolveCompanyId(state.company.data);
+  try {
+    const res = await fetch(RATIOS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ Type: 'CH', CompanyID: '', childType: '', dataFor: 'con', companyID: String(cid || '') }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (!json || json.status !== 1) throw new Error((json && json.msg) || 'API failure');
+    if (state.company.fp !== fp) return;
+    cap.data = parseCapital(json); cap.loading = false; cap.error = null;
+  } catch (e) {
+    if (state.company.fp !== fp) return;
+    cap.loading = false; cap.error = (e && e.message) || 'Failed to load capital history';
+  }
+  if (state.company.fp === fp && fp.activeTab === 'capital') renderForensicPage();
+}
+
+function renderForensicCapital() {
+  const cap = state.company.fp.capital;
+  let body;
+  if (cap.loading || (cap.data === null && !cap.error)) {
+    body = '<div class="fr-loading"><div class="fr-loading-text">Loading capital history…</div></div>';
+  } else if (cap.error) {
+    body = '<div class="fr-error"><p>' + escapeHtml(cap.error) + '</p><button type="button" class="fp-retry" data-chretry>Retry</button></div>';
+  } else {
+    body = renderCapitalTimeline(cap.data);
+  }
+  return '<div class="fp-singlepage fp-capital"><div class="fp-tables cv-forensic">' + body + '</div></div>';
+}
+
+function renderCapitalTimeline(data) {
+  const rows = (data && data.rows) || [];
+  if (!rows.length) return '<div class="fr-error"><p>No capital history available.</p></div>';
+
+  const totalRaised = rows.reduce((s, r) => s + chNum(r.fundRaised), 0);
+  const current = rows[0].sharesSubs || '—';   // latest event's cumulative shares
+  const years = rows.map(r => chYear(r.date)).filter(Boolean).map(Number);
+  const span = years.length ? (Math.min.apply(null, years) + '–' + Math.max.apply(null, years)) : '';
+  const stat = (val, lbl) => '<div class="ch-stat"><span class="ch-stat-val">' + escapeHtml(val) + '</span><span class="ch-stat-lbl">' + escapeHtml(lbl) + '</span></div>';
+  const summary = '<div class="ch-summary">'
+    + stat(current, 'Current shares')
+    + stat('₹' + totalRaised.toLocaleString('en-US') + ' Cr', 'Total raised')
+    + stat(String(rows.length), rows.length === 1 ? 'Event' : 'Events')
+    + (span ? stat(span, 'Span') : '')
+    + '</div>';
+
+  const events = rows.map(r => {
+    const st = chReasonStyle(r.reason);
+    const added = chNum(r.sharesAdded);
+    const sharesCls = added < 0 ? 'ch-neg' : 'ch-pos';
+    const sharesTxt = (added > 0 ? '+' : '') + (r.sharesAdded || '0');
+    const fund = chNum(r.fundRaised);
+    const fundHtml = fund > 0 ? '<span class="ch-fund">₹' + escapeHtml(r.fundRaised) + ' Cr raised</span>' : '<span class="ch-fund ch-fund-zero">No fresh capital</span>';
+    const sub = [];
+    if (r.sharesSubs) sub.push('Total ' + escapeHtml(r.sharesSubs));
+    if (r.faceValue) sub.push('FV ₹' + escapeHtml(r.faceValue));
+    if (chNum(r.sharePrice) > 0) sub.push('Price ₹' + escapeHtml(r.sharePrice));
+    if (chNum(r.premium) > 0) sub.push('Premium ₹' + escapeHtml(r.premium));
+    return '<div class="ch-event">'
+      + '<span class="ch-dot" style="background:' + st.dot + '"></span>'
+      + '<div class="ch-card">'
+      + '<div class="ch-event-head"><span class="ch-date">' + escapeHtml(r.date || '—') + '</span>'
+      + '<span class="ch-reason" style="background:' + st.bg + ';color:' + st.fg + '">' + escapeHtml(r.reason || '—') + '</span></div>'
+      + '<div class="ch-metrics"><span class="ch-shares ' + sharesCls + '">' + escapeHtml(sharesTxt) + ' shares</span>' + fundHtml + '</div>'
+      + (sub.length ? '<div class="ch-sub">' + sub.join(' · ') + '</div>' : '')
+      + '</div></div>';
+  }).join('');
+
+  return summary + '<div class="ch-timeline">' + events + '</div>';
+}
+
+/* ---- Forensic > Dividend History tab ------------------------------------
+   A vertical timeline (latest first) of dividend-per-share by year, reusing the
+   capital timeline skeleton. Zero years read as "No dividend"; paying years show
+   the DPS and a year-on-year change chip. No con/std. */
+
+function parseDividend(json) {
+  const d = (json && json.Data && json.Data[0]) || {};
+  const rows = (Array.isArray(d.TableData) ? d.TableData : []).map(r => ({
+    year: String(r.column_1 == null ? '' : r.column_1).trim(),
+    dps: String(r.column_2 == null ? '' : r.column_2).trim(),
+  })).filter(r => r.year);
+  rows.sort((a, b) => (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0));   // latest first
+  return { rows };
+}
+
+async function loadForensicDividend() {
+  const fp = state.company.fp;
+  if (!fp) return;
+  const dv = fp.dividend;
+  if (dv.data || dv.loading) return;
+  dv.loading = true; dv.error = null;
+  if (fp.activeTab === 'dividend') renderForensicPage();
+  const cid = resolveCompanyId(state.company.data);
+  try {
+    const res = await fetch(RATIOS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ Type: 'DH', CompanyID: '', childType: '', dataFor: 'con', companyID: String(cid || '') }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (!json || json.status !== 1) throw new Error((json && json.msg) || 'API failure');
+    if (state.company.fp !== fp) return;
+    dv.data = parseDividend(json); dv.loading = false; dv.error = null;
+  } catch (e) {
+    if (state.company.fp !== fp) return;
+    dv.loading = false; dv.error = (e && e.message) || 'Failed to load dividend history';
+  }
+  if (state.company.fp === fp && fp.activeTab === 'dividend') renderForensicPage();
+}
+
+function renderForensicDividend() {
+  const dv = state.company.fp.dividend;
+  let body;
+  if (dv.loading || (dv.data === null && !dv.error)) {
+    body = '<div class="fr-loading"><div class="fr-loading-text">Loading dividend history…</div></div>';
+  } else if (dv.error) {
+    body = '<div class="fr-error"><p>' + escapeHtml(dv.error) + '</p><button type="button" class="fp-retry" data-dhretry>Retry</button></div>';
+  } else {
+    body = renderDividendTimeline(dv.data);
+  }
+  return '<div class="fp-singlepage fp-dividend"><div class="fp-tables cv-forensic">' + body + '</div></div>';
+}
+
+function dvFmt(n) { return String(parseFloat(n.toFixed(2))); }   // 0.25→"0.25", 0.5→"0.5", 200→"200"
+
+function renderDividendTimeline(data) {
+  const rows = (data && data.rows) || [];
+  if (!rows.length) return '<div class="fr-error"><p>No dividend history available.</p></div>';
+
+  const nums = rows.map(r => chNum(r.dps));
+  const paidYears = nums.filter(n => n > 0).length;
+  let streak = 0; for (let i = 0; i < nums.length; i++) { if (nums[i] > 0) streak++; else break; }
+  const years = rows.map(r => parseInt(r.year, 10) || 0).filter(Boolean);
+  const span = years.length ? (Math.min.apply(null, years) + '–' + Math.max.apply(null, years)) : '';
+  const latestPaid = nums[0] > 0;
+  const stat = (val, lbl) => '<div class="ch-stat"><span class="ch-stat-val">' + escapeHtml(val) + '</span><span class="ch-stat-lbl">' + escapeHtml(lbl) + '</span></div>';
+  const summary = '<div class="ch-summary">'
+    + stat(latestPaid ? '₹' + rows[0].dps : '—', 'Latest DPS')
+    + stat(streak + (streak === 1 ? ' yr' : ' yrs'), 'Paying streak')
+    + stat(paidYears + ' of ' + rows.length, 'Years paid')
+    + (span ? stat(span, 'Span') : '')
+    + '</div>';
+
+  const events = rows.map((r, i) => {
+    const dps = nums[i];
+    const paid = dps > 0;
+    const prev = i < rows.length - 1 ? nums[i + 1] : null;   // the next older year
+    let chg = '';
+    if (paid && prev != null) {
+      if (prev === 0) chg = '<span class="dv-chg dv-up">Resumed</span>';
+      else if (dps > prev) chg = '<span class="dv-chg dv-up">▲ ₹' + escapeHtml(dvFmt(dps - prev)) + '</span>';
+      else if (dps < prev) chg = '<span class="dv-chg dv-down">▼ ₹' + escapeHtml(dvFmt(prev - dps)) + '</span>';
+      else chg = '<span class="dv-chg dv-flat">no change</span>';
+    }
+    const dot = paid ? '#E8743B' : '#CBD5E1';
+    const val = paid ? '<span class="dv-dps">₹' + escapeHtml(r.dps) + '</span>' + chg : '<span class="dv-none">No dividend</span>';
+    return '<div class="ch-event">'
+      + '<span class="ch-dot" style="background:' + dot + '"></span>'
+      + '<div class="ch-card dv-card"><span class="ch-date">' + escapeHtml(r.year) + '</span>' + val + '</div>'
+      + '</div>';
+  }).join('');
+
+  return summary + '<div class="ch-timeline">' + events + '</div>';
+}
+
+/* ---- Forensic > ESOP tab ------------------------------------------------
+   Chart-led dilution view: a cumulative-shares trend line (chronological) over
+   the ESOP allotment dates, a summary of the dilution, and the allotment detail
+   listed below (latest first). No con/std. */
+
+function parseEsop(json) {
+  const d = (json && json.Data && json.Data[0]) || {};
+  const rows = (Array.isArray(d.TableData) ? d.TableData : []).map(r => ({
+    date: String(r.column_1 == null ? '' : r.column_1).trim(),
+    sharesSubs: String(r.column_2 == null ? '' : r.column_2).trim(),
+    sharesAdded: String(r.column_3 == null ? '' : r.column_3).trim(),
+    reason: String(r.column_4 == null ? '' : r.column_4).trim(),
+  })).filter(r => r.date);
+  rows.sort((a, b) => chDateKey(b.date) - chDateKey(a.date));   // latest first (detail list)
+  return { rows };
+}
+
+async function loadForensicEsop() {
+  const fp = state.company.fp;
+  if (!fp) return;
+  const es = fp.esop;
+  if (es.data || es.loading) return;
+  es.loading = true; es.error = null;
+  if (fp.activeTab === 'esop') renderForensicPage();
+  const cid = resolveCompanyId(state.company.data);
+  try {
+    const res = await fetch(RATIOS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ Type: 'ESOP', CompanyID: '', childType: '', dataFor: 'con', companyID: String(cid || '') }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (!json || json.status !== 1) throw new Error((json && json.msg) || 'API failure');
+    if (state.company.fp !== fp) return;
+    es.data = parseEsop(json); es.loading = false; es.error = null;
+  } catch (e) {
+    if (state.company.fp !== fp) return;
+    es.loading = false; es.error = (e && e.message) || 'Failed to load ESOP data';
+  }
+  if (state.company.fp === fp && fp.activeTab === 'esop') renderForensicPage();
+}
+
+function renderForensicEsop() {
+  const es = state.company.fp.esop;
+  let body;
+  if (es.loading || (es.data === null && !es.error)) {
+    body = '<div class="fr-loading"><div class="fr-loading-text">Loading ESOP history…</div></div>';
+  } else if (es.error) {
+    body = '<div class="fr-error"><p>' + escapeHtml(es.error) + '</p><button type="button" class="fp-retry" data-esopretry>Retry</button></div>';
+  } else {
+    body = renderEsopView(es.data);
+  }
+  return '<div class="fp-singlepage fp-esop"><div class="fp-tables cv-forensic">' + body + '</div></div>';
+}
+
+function renderEsopView(data) {
+  const rows = (data && data.rows) || [];   // latest first
+  if (!rows.length) return '<div class="fr-error"><p>No ESOP history available.</p></div>';
+  const totalAdded = rows.reduce((s, r) => s + chNum(r.sharesAdded), 0);
+  const current = rows[0].sharesSubs || '—';
+  const currentNum = chNum(current);
+  const years = rows.map(r => chYear(r.date)).filter(Boolean).map(Number);
+  const span = years.length ? (Math.min.apply(null, years) + '–' + Math.max.apply(null, years)) : '';
+  const pct = currentNum > 0 ? ((totalAdded / currentNum) * 100).toFixed(1) : '0';
+
+  const stat = (val, lbl) => '<div class="ch-stat"><span class="ch-stat-val">' + escapeHtml(val) + '</span><span class="ch-stat-lbl">' + escapeHtml(lbl) + '</span></div>';
+  const summary = '<div class="ch-summary">'
+    + stat(current, 'Current shares')
+    + stat('+' + totalAdded.toLocaleString('en-US'), 'ESOP shares added')
+    + stat('≈' + pct + '%', 'Of current, via ESOP')
+    + stat(String(rows.length), rows.length === 1 ? 'Allotment' : 'Allotments')
+    + (span ? stat(span, 'Span') : '')
+    + '</div>';
+
+  // Chart series: cumulative shares over time, chronological (oldest → latest).
+  const chrono = rows.slice().reverse();
+  state.company.fp.esop._chart = { labels: chrono.map(r => r.date), data: chrono.map(r => chNum(r.sharesSubs)) };
+  const chart = '<div class="esop-chart-wrap"><canvas id="esopChart"></canvas></div>';
+
+  const listRows = rows.map(r =>
+    '<div class="esop-row"><span class="esop-date">' + escapeHtml(r.date) + '</span>'
+    + '<span class="esop-add">+' + escapeHtml(r.sharesAdded || '0') + '</span>'
+    + '<span class="esop-total">' + escapeHtml(r.sharesSubs || '') + '</span></div>').join('');
+  const detail = '<div class="esop-detail">'
+    + '<div class="esop-detail-head">All allotments · ' + rows.length + '</div>'
+    + '<div class="esop-list-head"><span>Date</span><span>Shares added</span><span>Cumulative</span></div>'
+    + '<div class="esop-list">' + listRows + '</div></div>';
+
+  return summary + chart + detail;
+}
+
+let esopChartInstance = null;
+function destroyEsopChart() { if (esopChartInstance) { try { esopChartInstance.destroy(); } catch (e) { /* detached */ } esopChartInstance = null; } }
+function wireEsopChart() {
+  destroyEsopChart();
+  const fp = state.company.fp;
+  const spec = fp && fp.esop && fp.esop._chart;
+  if (!spec || !spec.labels.length) return;
+  if (typeof Chart === 'undefined') { setTimeout(wireEsopChart, 100); return; }
+  const cv = document.getElementById('esopChart');
+  if (!cv || typeof cv.getContext !== 'function') return;
+  const ACCENT = '#E8743B';
+  const hasDL = typeof ChartDataLabels !== 'undefined';
+  esopChartInstance = new Chart(cv.getContext('2d'), {
+    type: 'line',
+    data: { labels: spec.labels, datasets: [{ label: 'Cumulative shares', data: spec.data, borderColor: ACCENT, backgroundColor: 'rgba(232,116,59,0.10)', borderWidth: 2, pointRadius: 2, pointHoverRadius: 4, tension: 0.25, fill: true,
+      datalabels: { align: 'top', anchor: 'end', clamp: true, color: '#334155', font: { size: 9, weight: '600' },
+        formatter: v => (v / 1e6).toFixed(2) + 'M' } }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      layout: { padding: { top: 20 } },   // headroom so the top labels aren't clipped
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => 'Shares: ' + Number(c.parsed.y).toLocaleString('en-US') } },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+        y: { grace: '8%', grid: { color: 'rgba(15,23,42,0.06)' }, ticks: { font: { size: 10 }, callback: v => (v / 1e6).toFixed(1) + 'M' } },
+      },
+    },
+    plugins: hasDL ? [ChartDataLabels] : [],   // per-chart only — Overview/ratio charts unaffected
+  });
+}
+
+
+
+
 function renderRatioCards(parsed) {
   const tips = RATIOS_TOOLTIP_CACHE || {};
   const years = parsed.years;
@@ -5661,6 +6658,13 @@ document.addEventListener('click', e => {
         if (sh) sh.innerHTML = '';
       }
     });
+  }
+  // Ratios chart compare picker.
+  if (fp && fp.ratios && fp.ratios.compare.search.open
+      && !e.target.closest('[data-rsearch]') && !e.target.closest('[data-rcompare]')) {
+    fp.ratios.compare.search.open = false;
+    const sh = document.querySelector('#forensicPage [data-rsearch]');
+    if (sh) sh.innerHTML = '';
   }
 });
 
