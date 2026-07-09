@@ -8533,6 +8533,7 @@ function displayForensicTabName(name) {
   if (/earnings?\s*quality/i.test(s)) return 'Earning Quality';
   if (/^\s*averages\s*$/i.test(s)) return 'Average';
   if (/working\s*capital/i.test(s)) return 'Working Capital Analysis';
+  if (/asset\s*efficiency/i.test(s)) return 'Asset Efficiency';
   if (/capital\s*structure/i.test(s)) return 'Capital Structure';
   if (/expense\s*analysis/i.test(s)) return 'Expenses Analysis';
   if (/shareholding\s*pattern/i.test(s)) return 'ShareHolding Pattern (In%)';
