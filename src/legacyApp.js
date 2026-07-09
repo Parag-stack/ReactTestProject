@@ -4646,10 +4646,17 @@ function startForensicSinglePage() {
     // company id so the same peer is fetched only once across all tables.
     compare: freshCompareState(), peerCache: {},
     // Forensic sub-tab: 'analysis' (default) or 'ratios'. ratios: lazy-loaded,
+<<<<<<< HEAD
     // cached per company (con-first, standalone fallback). view: 'chart' (default)|'table';
     // compare: one optional peer overlaid on every section chart.
     activeTab: 'analysis',
     ratios: { data: null, loading: false, error: null, mode: null, view: 'chart', _charts: [],
+=======
+    // cached per company (con-first, standalone fallback). view: 'table'|'chart';
+    // compare: one optional peer overlaid on every section chart.
+    activeTab: 'analysis',
+    ratios: { data: null, loading: false, error: null, mode: null, view: 'table', _charts: [],
+>>>>>>> 9a18ea0ebe544a7517bbabc48fde31d002a16856
       compare: { peer: null, data: null, loading: false, error: null,
         search: { open: false, query: '', results: [], loading: false, error: null, abort: null, timer: null, _view: [], highlighted: -1 } } },
     // Directors and Auditor tab — lazy-loaded, cached per company (no con/std).
@@ -5735,6 +5742,7 @@ function wireEsopChart() {
   if (!cv || typeof cv.getContext !== 'function') return;
   const ACCENT = '#E8743B';
   const hasDL = typeof ChartDataLabels !== 'undefined';
+<<<<<<< HEAD
   // Dense companies (113 allotments) leave ~14px per point while a "15.06Cr" label
   // needs ~38px. So label every Nth point (plus the first and last), targeting ~20
   // labels, and cycle those through 3 vertical rows for extra separation. Sparse
@@ -5754,6 +5762,16 @@ function wireEsopChart() {
     options: {
       responsive: true, maintainAspectRatio: false,
       layout: { padding: { top: 44 } },   // headroom for the 3-row label band
+=======
+  esopChartInstance = new Chart(cv.getContext('2d'), {
+    type: 'line',
+    data: { labels: spec.labels, datasets: [{ label: 'Cumulative shares', data: spec.data, borderColor: ACCENT, backgroundColor: 'rgba(232,116,59,0.10)', borderWidth: 2, pointRadius: 2, pointHoverRadius: 4, tension: 0.25, fill: true,
+      datalabels: { align: 'top', anchor: 'end', clamp: true, color: '#334155', font: { size: 9, weight: '600' },
+        formatter: v => (v / 1e6).toFixed(2) + 'M' } }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      layout: { padding: { top: 20 } },   // headroom so the top labels aren't clipped
+>>>>>>> 9a18ea0ebe544a7517bbabc48fde31d002a16856
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
@@ -5761,7 +5779,11 @@ function wireEsopChart() {
       },
       scales: {
         x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+<<<<<<< HEAD
         y: { grace: '12%', grid: { color: 'rgba(15,23,42,0.06)' }, ticks: { font: { size: 10 }, callback: v => (v / 1e7).toFixed(2) + 'Cr' } },
+=======
+        y: { grace: '8%', grid: { color: 'rgba(15,23,42,0.06)' }, ticks: { font: { size: 10 }, callback: v => (v / 1e6).toFixed(1) + 'M' } },
+>>>>>>> 9a18ea0ebe544a7517bbabc48fde31d002a16856
       },
     },
     plugins: hasDL ? [ChartDataLabels] : [],   // per-chart only — Overview/ratio charts unaffected
