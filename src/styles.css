@@ -191,7 +191,149 @@
 
   /* ---- Forensic > Ratios tab ---- */
   #forensicPage .fp-ratios { padding-top: 4px; }
-  #forensicPage .fr-ratios-head { display: flex; align-items: center; justify-content: flex-end; margin: 0 0 14px; }
+  #forensicPage .fr-ratios-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; }
+  #forensicPage .fr-ratios-head-left { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  /* Table / Chart toggle. */
+  #forensicPage .fr-view-toggle { display: inline-flex; gap: 3px; padding: 3px; background: #EEF1F4; border: 1px solid #E3E7EB; border-radius: var(--radius); }
+  #forensicPage .fr-vbtn { appearance: none; border: none; background: transparent; cursor: pointer; font-family: var(--font);
+    font-size: 12.5px; font-weight: 600; color: var(--muted); padding: 5px 14px; border-radius: 6px; }
+  #forensicPage .fr-vbtn.active { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(15,23,42,.08); }
+  /* Ratios compare (one peer) control. */
+  #forensicPage .fr-cmp-wrap { position: relative; display: inline-flex; align-items: center; gap: 8px; }
+  #forensicPage .fr-cmp-chip { display: inline-flex; align-items: center; gap: 7px; background: #fff; border: 1px solid var(--line);
+    border-radius: 999px; padding: 5px 8px 5px 11px; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+  #forensicPage .fr-cmp-dot { width: 9px; height: 9px; border-radius: 50%; background: #0D9488; flex: none; }
+  #forensicPage .fr-cmp-x { appearance: none; border: none; background: #E7EBEF; color: #556; cursor: pointer;
+    width: 17px; height: 17px; border-radius: 50%; font-size: 12px; line-height: 1; display: grid; place-items: center; padding: 0; }
+  #forensicPage .fr-cmp-x:hover { background: #D6DCE2; }
+  #forensicPage .fr-cmp-wrap .ff-menu { left: 0; right: auto; }
+  /* Chart grid inside a section card. */
+  #forensicPage .fr-chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; padding: 4px 0 12px; }
+  #forensicPage .fr-chart { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px 8px; background: #fff; min-width: 0; }
+  #forensicPage .fr-chart-title { font-size: 12.5px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+  #forensicPage .fr-chart-canvas { position: relative; height: 164px; }
+
+  /* ---- Directors and Auditor tab ---- */
+  #forensicPage .fp-directors { padding-top: 4px; }
+  #forensicPage .dir-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px; }
+  #forensicPage .dir-head-title { font-size: 15px; font-weight: 700; color: var(--ink); margin: 0; }
+  #forensicPage .dir-head-sub { font-size: 12px; color: var(--muted); }
+  #forensicPage .dir-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  /* Featured first row: the top-paid 3 (or more when a tie extends it), sized to
+     fill the row width so the highest earners read as prominent. */
+  #forensicPage .dir-top-row { display: grid; gap: 12px; margin-bottom: 12px; }
+  @media (max-width: 680px) { #forensicPage .dir-top-row { grid-template-columns: 1fr !important; } }
+  #forensicPage .dir-card { border: 1px solid var(--line); border-radius: 12px; padding: 14px 15px 12px; background: #fff;
+    box-shadow: 0 1px 2px rgba(15,23,42,.04); transition: box-shadow .12s, border-color .12s; }
+  #forensicPage .dir-card:hover { box-shadow: 0 4px 14px rgba(15,23,42,.09); }
+  #forensicPage .dir-card.dir-top { border-color: #F1B37D; box-shadow: 0 0 0 1px #F1B37D inset, 0 1px 2px rgba(15,23,42,.04); }
+  #forensicPage .dir-card-top { display: flex; align-items: center; gap: 11px; }
+  #forensicPage .dir-avatar { width: 38px; height: 38px; border-radius: 50%; flex: none; display: grid; place-items: center;
+    color: #fff; font-size: 13px; font-weight: 700; letter-spacing: .02em; }
+  #forensicPage .dir-id { min-width: 0; flex: 1; }
+  #forensicPage .dir-name { appearance: none; border: none; background: none; padding: 0; cursor: pointer; text-align: left;
+    font-family: var(--font); font-size: 14px; font-weight: 700; color: var(--ink); line-height: 1.25;
+    border-bottom: 1px dashed transparent; }
+  #forensicPage .dir-name:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  #forensicPage .dir-role { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.3; }
+  #forensicPage .dir-top-tag { flex: none; align-self: flex-start; font-size: 9px; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; color: #B45309; background: #FDF0E3; border-radius: 999px; padding: 3px 7px; }
+  #forensicPage .dir-rem { display: flex; align-items: baseline; justify-content: space-between; margin: 12px 0 6px; }
+  #forensicPage .dir-rem-val { font-size: 15px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+  #forensicPage .dir-rem-yr { font-size: 10.5px; color: var(--muted); }
+  #forensicPage .dir-rem-bar { height: 5px; border-radius: 3px; background: #EEF1F4; overflow: hidden; }
+  #forensicPage .dir-rem-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+  #forensicPage .dir-card.dir-top .dir-rem-bar > span { background: #B45309; }
+  #forensicPage .dir-note { margin-top: 14px; font-size: 12px; color: var(--muted); }
+  /* Auditors — grouped by firm (current first), each with the years it audited. */
+  #forensicPage .aud-list { display: flex; flex-direction: column; gap: 10px; }
+  #forensicPage .aud-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+    border: 1px solid var(--line); border-radius: 12px; padding: 12px 15px; background: #fff; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+  #forensicPage .aud-firm { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; min-width: 0; }
+  #forensicPage .aud-name { font-size: 14px; font-weight: 700; }
+  #forensicPage .aud-current { font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #0F766E;
+    background: #E6F4F1; border-radius: 999px; padding: 3px 8px; }
+  #forensicPage .aud-tenure { font-size: 11.5px; color: var(--muted); }
+  #forensicPage .aud-yrs { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
+  #forensicPage .aud-yr { font-size: 11px; font-weight: 600; color: var(--ink-2); background: #F1F3F5; border-radius: 6px;
+    padding: 3px 7px; font-variant-numeric: tabular-nums; }
+  /* Year chips reused inside the auditor associations modal. */
+  .dir-modal .aud-yrs { display: flex; flex-wrap: wrap; gap: 5px; }
+  .dir-modal .aud-yr { font-size: 11px; font-weight: 600; color: var(--ink-2); background: #F1F3F5; border-radius: 6px;
+    padding: 3px 7px; font-variant-numeric: tabular-nums; }
+
+  /* ---- Capital History (timeline) ---- */
+  #forensicPage .fp-capital { padding-top: 4px; }
+  #forensicPage .ch-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  #forensicPage .ch-stat { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: #fff; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+  #forensicPage .ch-stat-val { display: block; font-size: 17px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+  #forensicPage .ch-stat-lbl { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; text-transform: uppercase; letter-spacing: .03em; }
+  #forensicPage .ch-timeline { position: relative; margin-left: 7px; }
+  #forensicPage .ch-timeline::before { content: ""; position: absolute; left: 6px; top: 8px; bottom: 8px; width: 2px; background: var(--line); }
+  #forensicPage .ch-event { position: relative; padding: 0 0 12px 30px; }
+  #forensicPage .ch-event:last-child { padding-bottom: 0; }
+  #forensicPage .ch-dot { position: absolute; left: 0; top: 8px; width: 14px; height: 14px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 1px var(--line); }
+  #forensicPage .ch-card { border: 1px solid var(--line); border-radius: 11px; padding: 11px 14px; background: #fff; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+  #forensicPage .ch-event-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  #forensicPage .ch-date { font-size: 13px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+  #forensicPage .ch-reason { font-size: 10.5px; font-weight: 700; letter-spacing: .02em; border-radius: 999px; padding: 3px 10px; }
+  #forensicPage .ch-metrics { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  #forensicPage .ch-shares { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  #forensicPage .ch-shares.ch-pos { color: #15803D; }
+  #forensicPage .ch-shares.ch-neg { color: #B91C1C; }
+  #forensicPage .ch-fund { font-size: 13px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  #forensicPage .ch-fund-zero { color: var(--muted); font-weight: 500; }
+  #forensicPage .ch-sub { margin-top: 7px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  /* Dividend History nodes (same timeline skeleton). */
+  #forensicPage .dv-card { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  #forensicPage .dv-dps { font-size: 15px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+  #forensicPage .dv-none { font-size: 13px; font-weight: 500; color: var(--muted); }
+  #forensicPage .dv-chg { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 2px 8px; font-variant-numeric: tabular-nums; }
+  #forensicPage .dv-chg.dv-up { color: #15803D; background: #E7F6EC; }
+  #forensicPage .dv-chg.dv-down { color: #B91C1C; background: #FCEBEB; }
+  #forensicPage .dv-chg.dv-flat { color: var(--muted); background: #F1F3F5; }
+
+  /* ---- ESOP (chart-led dilution view) ---- */
+  #forensicPage .fp-esop { padding-top: 4px; }
+  #forensicPage .esop-chart-wrap { position: relative; height: 250px; border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; background: #fff; box-shadow: 0 1px 2px rgba(15,23,42,.04); margin-bottom: 22px; }
+  #forensicPage .esop-detail-head { font-size: 13px; font-weight: 700; color: var(--ink); margin-bottom: 8px; }
+  #forensicPage .esop-list-head, #forensicPage .esop-row { display: grid; grid-template-columns: 1.4fr 1fr 1.2fr; gap: 12px; align-items: baseline; }
+  #forensicPage .esop-list-head { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted);
+    padding: 0 12px 6px; border-bottom: 1px solid var(--line); }
+  #forensicPage .esop-list-head span:nth-child(2), #forensicPage .esop-row .esop-add,
+  #forensicPage .esop-list-head span:nth-child(3), #forensicPage .esop-row .esop-total { text-align: right; }
+  #forensicPage .esop-list { display: flex; flex-direction: column; }
+  #forensicPage .esop-row { padding: 8px 12px; border-bottom: 1px solid #F1F3F5; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  #forensicPage .esop-row:last-child { border-bottom: none; }
+  #forensicPage .esop-date { color: var(--ink); font-weight: 600; }
+  #forensicPage .esop-add { color: #15803D; font-weight: 700; }
+  #forensicPage .esop-total { color: var(--ink-2); }
+  /* Associations modal. */
+  .dir-modal-overlay { position: fixed; inset: 0; z-index: 1000; display: none; align-items: center; justify-content: center;
+    background: rgba(15,23,42,.42); padding: 20px; }
+  .dir-modal { background: #fff; border-radius: 14px; width: min(720px, 100%); max-height: 82vh; overflow: hidden;
+    display: flex; flex-direction: column; box-shadow: 0 24px 60px rgba(15,23,42,.3); }
+  .dir-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 16px 18px; border-bottom: 1px solid var(--line); }
+  .dir-modal-head h3 { margin: 0; font-size: 15px; font-weight: 700; color: var(--ink); }
+  .dir-modal-sub { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .dir-assoc-loading { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 30px; color: var(--muted); font-size: 13px; }
+  .dir-assoc-group { border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; margin-bottom: 10px; }
+  .dir-assoc-group:last-child { margin-bottom: 0; }
+  .dir-assoc-co { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+  .dir-assoc-co-name { font-size: 13px; font-weight: 700; color: var(--ink); }
+  .dir-assoc-co-yrs { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dir-assoc-rows { display: flex; flex-direction: column; gap: 4px; }
+  .dir-assoc-row { display: grid; grid-template-columns: 48px 1fr auto; gap: 10px; align-items: baseline; font-size: 12px; }
+  .dir-assoc-year { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dir-assoc-desg { color: var(--ink-2); line-height: 1.35; }
+  .dir-assoc-rem { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dir-modal-x { appearance: none; border: none; background: #F1F3F5; color: #556; cursor: pointer; width: 28px; height: 28px;
+    border-radius: 8px; font-size: 18px; line-height: 1; display: grid; place-items: center; }
+  .dir-modal-x:hover { background: #E4E7EA; }
+  .dir-modal-body { padding: 18px; overflow-y: auto; }
+  .dir-assoc-empty { color: var(--muted); font-size: 13px; line-height: 1.5; text-align: center; padding: 24px 8px; }
   #forensicPage .fr-ratios-mode { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700;
     letter-spacing: .04em; text-transform: uppercase; color: var(--muted); background: var(--bg-tile, #F5F2EC);
     border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; cursor: default; }
