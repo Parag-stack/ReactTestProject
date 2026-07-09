@@ -295,7 +295,15 @@
 
   /* ---- ESOP (chart-led dilution view) ---- */
   #forensicPage .fp-esop { padding-top: 4px; }
+<<<<<<< HEAD
   #forensicPage .esop-chart-wrap { position: relative; height: 300px; border: 1px solid var(--line); border-radius: 12px;
+=======
+<<<<<<< HEAD
+  #forensicPage .esop-chart-wrap { position: relative; height: 300px; border: 1px solid var(--line); border-radius: 12px;
+=======
+  #forensicPage .esop-chart-wrap { position: relative; height: 250px; border: 1px solid var(--line); border-radius: 12px;
+>>>>>>> 9a18ea0ebe544a7517bbabc48fde31d002a16856
+>>>>>>> c608302e187f0d48f2d3db6344c7072e802583f8
     padding: 12px 14px; background: #fff; box-shadow: 0 1px 2px rgba(15,23,42,.04); margin-bottom: 22px; }
   #forensicPage .esop-detail-head { font-size: 13px; font-weight: 700; color: var(--ink); margin-bottom: 8px; }
   #forensicPage .esop-list-head, #forensicPage .esop-row { display: grid; grid-template-columns: 1.4fr 1fr 1.2fr; gap: 12px; align-items: baseline; }
