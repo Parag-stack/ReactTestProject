@@ -262,10 +262,6 @@ stock allotments.
   the share of current stock that came via ESOP (≈%), the allotment count, and span.
 - **Dilution chart**: a filled cumulative-shares **line chart** (Chart.js) over the
   allotment dates, chronological (oldest → latest) so the dilution reads left-to-right.
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> c608302e187f0d48f2d3db6344c7072e802583f8
   Y-axis and point labels are both formatted in **crore to 2 dp** ("15.06Cr"); the
   full number stays in the hover tooltip. Labels sit **above the line** and cycle
   through **3 alternating heights**. Dense companies (e.g. 113 allotments) leave only
@@ -276,16 +272,6 @@ stock allotments.
   per-chart `chartjs-plugin-datalabels` (never registered globally, so other charts are
   unaffected), with `layout.padding.top` + y-axis `grace` reserving the label band.
   The instance is tracked in `esopChartInstance` and **disposed** via
-<<<<<<< HEAD
-=======
-=======
-  Y-axis formatted in millions, full numbers in the tooltip. Each point is **labelled
-  above the line with the cumulative shares subscribed** (in millions, e.g. "62.40M"),
-  via the per-chart `chartjs-plugin-datalabels` (never registered globally, so other
-  charts are unaffected); the plot area has top padding + y-axis grace so labels aren't
-  clipped. The instance is tracked in `esopChartInstance` and **disposed** via
->>>>>>> 9a18ea0ebe544a7517bbabc48fde31d002a16856
->>>>>>> c608302e187f0d48f2d3db6344c7072e802583f8
   `destroyEsopChart()` (called at the top of `wireForensicPage` on every re-render and
   recreated by `wireEsopChart()` only when the ESOP tab is active).
 - **Allotment detail**: below the chart, every allotment listed latest-first — date,
@@ -407,15 +393,7 @@ Analysis. Clicking it switches the forensic page to a clean, section-grouped
   two groups read as distinct; leading/trailing blanks are trimmed.
 - No good/bad colour-coding: the "better" direction differs per ratio, so values
   are shown neutrally to avoid misleading the reader.
-<<<<<<< HEAD
 - **Chart view**: a **Table / Chart** toggle (top-left, defaults to Chart) switches
-=======
-<<<<<<< HEAD
-- **Chart view**: a **Table / Chart** toggle (top-left, defaults to Chart) switches
-=======
-- **Chart view**: a **Table / Chart** toggle (top-left, defaults to Table) switches
->>>>>>> 9a18ea0ebe544a7517bbabc48fde31d002a16856
->>>>>>> c608302e187f0d48f2d3db6344c7072e802583f8
   every card to line charts. Each card draws **one small line chart per key metric**
   (its own scale — clearest per field) per the spec: Return Ratios → ROE%, ROCE%;
   Survival → Net Debt/Total Equity; Balance Sheet Health → Asset Turnover, Cash
